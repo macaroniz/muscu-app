@@ -471,7 +471,7 @@ async function demarrerSeance(type){
   draft = {
     schema_version: 1, type_seance: type, nom: t.nom, date: today(),
     heure_debut: new Date().toTimeString().slice(0,5), heure_fin: null,
-    lieu: model && model.lieu ? model.lieu : 'Annemasse', note_seance: '',
+    lieu: model && model.lieu ? model.lieu : '', note_seance: '',
     exercices: (model ? model.exercices : []).map(e => nouvelExo(
       e.nom, e.groupe, {charge_kg: e.charge_kg, charge_note: e.charge_note || null,
         series: e.series || [], series_note: e.series_note || null, note: e.note || null},
