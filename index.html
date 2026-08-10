@@ -708,42 +708,96 @@ function renderSeancesList(d){
     </div>`).join('') : '<p class="muted">Aucune séance loguée pour l\'instant.</p>';
 }
 
-/* --- sante 7 jours --- */
+/* --- sante 7 jours (agnostique : affiche toute metrique presente) --- */
+/* meta connues : [libelle, unite, decimales, mode] — mode 'last' = derniere valeur, sinon moyenne */
+const SANTE_META = {
+  sommeil_h:          ['😴 Sommeil', 'h', 1],
+  vfc_ms:             ['🫀 VFC', 'ms', 0],
+  fc_repos:           ['❤️ FC repos', 'bpm', 0],
+  kcal:               ['🍽 Calories', 'kcal', 0],
+  proteines_g:        ['🥩 Protéines', 'g', 0],
+  glucides_g:         ['🍞 Glucides', 'g', 0],
+  lipides_g:          ['🥑 Lipides', 'g', 0],
+  poids_kg:           ['⚖️ Poids', 'kg', 1, 'last'],
+  masse_grasse_pct:   ['📉 Masse grasse', '%', 1, 'last'],
+  pas:                ['👟 Pas', '', 0],
+  energie_active_kcal:['🔥 Énergie active', 'kcal', 0],
+  sommeil_profond_h:  ['🌙 Sommeil profond', 'h', 1],
+  sommeil_rem_h:      ['💤 Sommeil REM', 'h', 1],
+  minutes_exercice:   ['🏃 Minutes d\'exercice', 'min', 0],
+  freq_respiratoire:  ['🌬 Fréq. respiratoire', '/min', 1],
+  spo2_pct:           ['🩸 SpO₂', '%', 0],
+  vo2max:             ['🫁 VO₂max', '', 1, 'last'],
+};
+function labelSante(k){
+  const m = SANTE_META[k];
+  if (m) return m;
+  // metrique inconnue : libelle lisible derive de la cle + unite devinee par suffixe
+  const u = k.endsWith('_kg') ? 'kg' : k.endsWith('_h') ? 'h' : k.endsWith('_g') ? 'g'
+    : k.endsWith('_pct') ? '%' : k.endsWith('_ms') ? 'ms' : k.endsWith('_min') ? 'min' : '';
+  const nom = k.replace(/_(kg|h|g|pct|ms|min|kcal)$/, '').replace(/_/g, ' ');
+  return ['• ' + nom.charAt(0).toUpperCase() + nom.slice(1), u, 1];
+}
 function renderSante(d){
   const days = Object.keys(d.sante || {}).sort().slice(-7);
-  if (!days.length){ $('#st-sante').innerHTML = '<p class="muted">Pas encore de données Apple Santé — dépose un export dans inbox/ et lance le batch.</p>'; return; }
-  const avg = (f, dec=0) => { const v = days.map(x => d.sante[x][f]).filter(x => x != null);
-    return v.length ? (v.reduce((a,b)=>a+b,0)/v.length).toFixed(dec) : '–'; };
-  const lastOf = f => { for (let i = days.length-1; i >= 0; i--) if (d.sante[days[i]][f] != null) return d.sante[days[i]][f]; return null; };
-  $('#st-sante').innerHTML = `<table>
-    <tr><td>😴 Sommeil moyen</td><td class="num">${avg('sommeil_h', 1)} h</td></tr>
-    <tr><td>🍽 Calories moy.</td><td class="num">${avg('kcal')} kcal</td></tr>
-    <tr><td>🥩 Protéines moy.</td><td class="num">${avg('proteines_g')} g</td></tr>
-    <tr><td>👟 Pas moy.</td><td class="num">${avg('pas')}</td></tr>
-    <tr><td>❤️ FC repos (dernier)</td><td class="num">${lastOf('fc_repos') ?? '–'} bpm</td></tr>
-    <tr><td>⚖️ Poids (dernier)</td><td class="num">${lastOf('poids_kg') != null ? kg(lastOf('poids_kg')) + ' kg' : '–'}</td></tr>
-    <tr><td>💊 Compléments (dernier jour)</td><td>${esc((d.sante[days[days.length-1]].complements || []).join(', ') || '–')}</td></tr>
-  </table>`;
+  if (!days.length){
+    $('#st-sante').innerHTML = '<p class="muted">Pas encore de données Apple Santé — le raccourci iPhone les enverra automatiquement chaque jour.</p>';
+    return;
+  }
+  // metriques presentes : celles annoncees par le batch, sinon deduites des donnees
+  let vars = d.sante_vars;
+  if (!vars || !vars.length){
+    const s = new Set();
+    days.forEach(x => Object.entries(d.sante[x]).forEach(([k, v]) => { if (typeof v === 'number') s.add(k); }));
+    vars = [...s];
+  }
+  const rows = vars.map(k => {
+    const [lbl, unit, dec, mode] = labelSante(k);
+    const vals = days.map(x => (d.sante[x] || {})[k]).filter(v => typeof v === 'number');
+    if (!vals.length) return '';
+    const last = vals[vals.length - 1];
+    const v = mode === 'last' ? last : vals.reduce((a, b) => a + b, 0) / vals.length;
+    const suffixe = mode === 'last' ? '' : ` <span class="muted">(moy. ${vals.length}j)</span>`;
+    return `<tr><td>${lbl}${suffixe}</td><td class="num">${v.toFixed(dec)}${unit ? ' ' + unit : ''}</td></tr>`;
+  }).filter(Boolean).join('');
+  // champs non numeriques utiles
+  const dernier = d.sante[days[days.length - 1]] || {};
+  const compl = (dernier.complements || []).join(', ');
+  const wk = (dernier.workouts || []).map(w => `${w.type} ${w.duree_min ?? '?'} min`).join(', ');
+  $('#st-sante').innerHTML = `<table>${rows}
+    ${compl ? `<tr><td>💊 Compléments</td><td>${esc(compl)}</td></tr>` : ''}
+    ${wk ? `<tr><td>⌚️ Séances Watch</td><td>${esc(wk)}</td></tr>` : ''}
+  </table><p class="muted">Dernier jour reçu : ${fmtDate(days[days.length-1])}</p>`;
 }
 
 /* --- mensurations --- */
+/* courbes : toute metrique sante (prefixe h:) ou toute mensuration saisie (prefixe m:) */
 function renderMesuresSelect(d){
   const sel = $('#st-mes-sel');
   const cur = sel.value;
-  sel.innerHTML = ['poids_kg_sante', ...MESURES_CHAMPS].map(c =>
-    `<option value="${c}">${c === 'poids_kg_sante' ? 'poids (Santé)' : c.replace('_', ' ')}</option>`).join('');
+  const hv = (d.sante_vars && d.sante_vars.length) ? d.sante_vars : [];
+  const opts = [
+    ...hv.map(k => `<option value="h:${k}">${labelSante(k)[0]} (Santé)</option>`),
+    ...MESURES_CHAMPS.map(c => `<option value="m:${c}">📏 ${c.replace('_', ' ')}</option>`),
+  ];
+  sel.innerHTML = opts.join('');
   if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+  else if (hv.includes('poids_kg')) sel.value = 'h:poids_kg';
   renderMesures();
 }
 function renderMesures(){
   const d = dashboard; if (!d) return;
-  const c = $('#st-mes-sel').value;
-  let pts = [];
-  if (c === 'poids_kg_sante')
-    pts = Object.keys(d.sante || {}).sort().map(x => ({x, y: d.sante[x].poids_kg})).filter(p => p.y != null);
-  else
-    pts = (d.mesures || []).map(m => ({x: m.date, y: m[c]})).filter(p => p.x && p.y != null);
-  $('#st-mes').innerHTML = pts.length >= 2 ? lineSvg(pts, c === 'poids_kg_sante' ? 'kg' : 'cm')
+  const v = $('#st-mes-sel').value || '';
+  const [src, k] = [v.slice(0, 1), v.slice(2)];
+  let pts = [], unit = 'cm';
+  if (src === 'h'){
+    unit = labelSante(k)[1];
+    pts = Object.keys(d.sante || {}).sort()
+      .map(x => ({x, y: (d.sante[x] || {})[k]})).filter(p => typeof p.y === 'number');
+  } else if (src === 'm'){
+    pts = (d.mesures || []).map(m => ({x: m.date, y: m[k]})).filter(p => p.x && p.y != null);
+  }
+  $('#st-mes').innerHTML = pts.length >= 2 ? lineSvg(pts, unit)
     : '<p class="muted">Pas assez de points (min 2).</p>';
 }
 
