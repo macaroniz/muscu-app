@@ -252,7 +252,15 @@ button{transition:transform .08s ease} button:active{transform:scale(.96)}
     </div>
     <p class="muted" id="rg-sync"></p>
   </div>
-  <p class="muted">Muscu v<span id="rg-version"></span> — données : GitHub privé · app : GitHub Pages</p>
+  <div class="card">
+    <div class="spread">
+      <span><b>Version</b> <span class="num" id="rg-version"></span></span>
+      <span id="rg-maj" class="sub">…</span>
+    </div>
+    <p class="muted" id="rg-build"></p>
+    <button class="ghost small" onclick="forcerMaj()">Forcer la mise à jour</button>
+  </div>
+  <p class="muted">Données : repo GitHub privé · app : GitHub Pages</p>
 </div>
 
 <nav>
@@ -275,7 +283,8 @@ window.addEventListener('unhandledrejection', (e) => {
   const s = document.getElementById('home-status');
   if (s) s.textContent = '⚠️ Erreur : ' + (e.reason && e.reason.message || e.reason);
 });
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
+const APP_BUILD = '11/08/2026';
 const GROUPES = ['Pec','Dos','Epaules','Biceps','Triceps','Quadriceps','Ischios','Fessiers','Mollets','Lombaires','Abdos'];
 const TYPES = [
   {id:'upper_a', nom:'Upper A'}, {id:'upper_b', nom:'Upper B'},
@@ -307,6 +316,29 @@ let lastByType = null;     // computed/last_by_type.json (cache) — {type:{sour
 let localLast = {};        // dernieres seances terminees localement {type:seance}
 let evoMode = 'charge';
 let chronoTimer = null;
+let swReg = null, majDispo = false;
+
+/* --- mise a jour de l'app --- */
+function appliquerMaj(){
+  if (swReg && swReg.waiting) swReg.waiting.postMessage('SKIP_WAITING');
+  setTimeout(() => location.reload(), 150);
+}
+async function forcerMaj(){
+  if (!confirm('Vider le cache et recharger l\'app ?\n(tes séances en attente et tes réglages sont conservés)')) return;
+  try {
+    if ('caches' in window) for (const k of await caches.keys()) await caches.delete(k);
+    if (swReg) { if (swReg.waiting) swReg.waiting.postMessage('SKIP_WAITING'); await swReg.unregister(); }
+  } catch (e) { /* on recharge quand meme */ }
+  location.replace(location.pathname + '?maj=' + Date.now());
+}
+function renderReglages0(){   // rafraichit juste le bloc version s'il est visible
+  const el = $('#rg-maj');
+  if (!el) return;
+  el.innerHTML = majDispo
+    ? `<span class="c-jaune">⬆️ Mise à jour disponible</span>
+       <button class="small" style="margin-left:8px" onclick="appliquerMaj()">Installer</button>`
+    : `<span class="c-vert">✓ À jour</span>`;
+}
 
 /* ==================== IndexedDB ==================== */
 const idb = {
@@ -1040,6 +1072,9 @@ function renderReglages(){
   $('#rg-token').value = cfg.token || '';
   $('#rg-exp').value = cfg.tokenExp || '';
   $('#rg-version').textContent = APP_VERSION;
+  $('#rg-build').textContent = 'Publiée le ' + APP_BUILD;
+  renderReglages0();
+  if (swReg) swReg.update().catch(() => {});
   updateSyncUI();
 }
 async function testerConnexion(){
@@ -1075,24 +1110,33 @@ async function testerConnexion(){
     if (document.visibilityState === 'visible'){ flushQueue(); refreshData(false); }
   });
   document.documentElement.dataset.init = 'ok';
-  // service worker + bandeau de mise a jour (non bloquant)
+  // service worker + detection active des mises a jour (non bloquant)
   if ('serviceWorker' in navigator){
     navigator.serviceWorker.register('sw.js').then((reg) => {
+      swReg = reg;
       const notif = () => {
-        if (reg.waiting){
-          const b = document.createElement('div');
-          b.className = 'banner';
-          b.style.cssText = 'position:fixed;top:10px;left:10px;right:10px;z-index:50';
-          b.innerHTML = '<span>Nouvelle version dispo</span><button class="small" style="background:#fff;color:var(--s1)">Recharger</button>';
-          b.querySelector('button').onclick = () => { reg.waiting.postMessage('SKIP_WAITING'); location.reload(); };
-          document.body.appendChild(b);
-        }
+        majDispo = !!reg.waiting;
+        if (!majDispo || document.getElementById('maj-banner')) { renderReglages0(); return; }
+        const b = document.createElement('div');
+        b.id = 'maj-banner';
+        b.className = 'banner';
+        b.style.cssText = 'position:fixed;top:10px;left:10px;right:10px;z-index:50';
+        b.innerHTML = '<span>✨ Nouvelle version disponible</span><button class="small" style="background:#fff;color:var(--s1)">Installer</button>';
+        b.querySelector('button').onclick = () => appliquerMaj();
+        document.body.appendChild(b);
+        renderReglages0();
       };
       reg.addEventListener('updatefound', () => {
         const w = reg.installing;
         w && w.addEventListener('statechange', notif);
       });
       notif();
+      // verifier a chaque ouverture / retour au premier plan (iOS ne le fait pas toujours seul)
+      const verifier = () => reg.update().catch(() => {});
+      verifier();
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') verifier();
+      });
     }).catch(() => { /* file:// ou navigateur sans SW : app utilisable quand meme */ });
   }
 })();
