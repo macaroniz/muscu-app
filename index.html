@@ -10,9 +10,20 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <title>Muscu</title>
+<script>/* theme avant peinture : sombre par defaut (ambiance desk) */
+document.documentElement.dataset.theme = localStorage.getItem('muscu_theme') || 'sombre';</script>
 <style>
 /* ---------- palette (roles ; clair + sombre) ---------- */
 :root{
+  /* sombre par defaut — ambiance desk */
+  color-scheme: dark;
+  --surface:#1a1a19; --plane:#0d0d0d; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+  --s1:#3987e5; --s1-soft:#184f95;
+  --good:#0ca30c; --warn:#fab219; --bad:#898781; --new:#3987e5; --crit:#d03b3b;
+  --good-text:#0ca30c;
+}
+:root[data-theme="clair"]{
   color-scheme: light;
   --surface:#fcfcfb; --plane:#f9f9f7; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
   --grid:#e1e0d9; --axis:#c3c2b7; --ring:rgba(11,11,11,.10);
@@ -20,14 +31,14 @@
   --good:#0ca30c; --warn:#fab219; --bad:#898781; --new:#2a78d6; --crit:#d03b3b;
   --good-text:#006300;
 }
-@media (prefers-color-scheme: dark){
-  :root{
-    color-scheme: dark;
-    --surface:#1a1a19; --plane:#0d0d0d; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
-    --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
-    --s1:#3987e5; --s1-soft:#184f95;
-    --good:#0ca30c; --warn:#fab219; --bad:#898781; --new:#3987e5; --crit:#d03b3b;
-    --good-text:#0ca30c;
+@media (prefers-color-scheme: light){
+  :root[data-theme="auto"]{
+    color-scheme: light;
+    --surface:#fcfcfb; --plane:#f9f9f7; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --axis:#c3c2b7; --ring:rgba(11,11,11,.10);
+    --s1:#2a78d6; --s1-soft:#cde2fb;
+    --good:#0ca30c; --warn:#fab219; --bad:#898781; --new:#2a78d6; --crit:#d03b3b;
+    --good-text:#006300;
   }
 }
 /* ---------- base ---------- */
@@ -126,6 +137,39 @@ button{transition:transform .08s ease} button:active{transform:scale(.96)}
 .mini td:nth-child(3){text-align:right; font-weight:600; width:64px; white-space:nowrap}
 .chart-tap{touch-action:pan-y}
 .repr{float:right; margin-left:8px}
+/* --- semaine --- */
+.wbar{background:var(--plane); border-radius:8px; height:22px; position:relative; overflow:hidden}
+.wbar>div{height:100%; background:var(--s1); border-radius:8px 4px 4px 8px; min-width:2px;
+  transition:width .3s ease}
+.wbar.ok>div{background:var(--good)}
+.wbar span{position:absolute; left:0; right:0; top:0; line-height:22px; text-align:center;
+  font-size:.78rem; font-weight:700; color:var(--ink)}
+.sem-exo{display:flex; align-items:center; gap:8px; padding:7px 0;
+  border-bottom:1px solid var(--grid); font-size:.9rem}
+.sem-exo:last-child{border-bottom:none}
+.sem-exo .etat{width:20px; text-align:center; flex:none}
+.sem-exo .nomx{flex:1; min-width:0}
+.sem-exo .nomx small{display:block; color:var(--muted); font-size:.74rem}
+.sem-exo .prog{font-variant-numeric:tabular-nums; font-size:.82rem; color:var(--ink2);
+  white-space:nowrap}
+.sem-exo.fait .nomx{color:var(--muted); text-decoration:line-through;
+  text-decoration-color:var(--good); text-decoration-thickness:1.5px}
+.tagset{display:inline-flex; gap:3px}
+.tag{font-size:.62rem; border:1px solid var(--ring); border-radius:5px; padding:0 4px;
+  color:var(--muted)}
+/* --- calendrier --- */
+.cal-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:4px; text-align:center}
+.cal-grid .dow{font-size:.68rem; color:var(--muted); text-transform:uppercase}
+.cal-day{aspect-ratio:1; border-radius:10px; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; font-size:.85rem; background:none;
+  color:var(--ink); padding:0; min-height:0; border:1px solid transparent}
+.cal-day.hors{color:var(--axis)}
+.cal-day.today{border-color:var(--s1)}
+.cal-day .pips{display:flex; gap:2px; height:6px; margin-top:2px}
+.cal-day .pip{width:6px; height:6px; border-radius:50%}
+.cal-day.sel{background:var(--plane)}
+/* --- chips periode --- */
+.chips button.per{min-height:30px; padding:4px 10px; font-size:.78rem}
 </style>
 </head>
 <body>
@@ -142,6 +186,7 @@ button{transition:transform .08s ease} button:active{transform:scale(.96)}
   </div>
   <div id="home-banner"></div>
   <div id="home-resume"></div>
+  <div id="home-semaine"></div>
   <div id="home-derniere"></div>
   <div id="home-types"></div>
   <p class="muted" id="home-status"></p>
@@ -175,6 +220,24 @@ button{transition:transform .08s ease} button:active{transform:scale(.96)}
   <p class="muted" style="text-align:center">Sauvegarde automatique à chaque frappe — tu peux fermer sans rien perdre.</p>
 </div>
 
+<!-- ======================= SEMAINE ======================= -->
+<div class="view" id="view-semaine">
+  <div class="spread">
+    <h1>Ma semaine</h1>
+    <div class="row">
+      <button class="ghost small" onclick="semaineNav(-1)">‹</button>
+      <button class="ghost small" onclick="semaineNav(1)" id="sem-next">›</button>
+    </div>
+  </div>
+  <p class="sub" id="sem-titre"></p>
+  <div class="card" id="sem-resume"></div>
+  <div id="sem-groupes"></div>
+  <div id="sem-extra"></div>
+  <p class="muted">Programme figé au lundi (dernière version de chaque séance avant la semaine).
+  Répartis-le librement : un exo fait dans n'importe quelle séance compte. Un exo improvisé
+  apparaît dans « En plus » et intègre le programme la semaine suivante.</p>
+</div>
+
 <!-- ======================= STATS ======================= -->
 <div class="view" id="view-stats">
   <h1>Stats</h1>
@@ -184,15 +247,28 @@ button{transition:transform .08s ease} button:active{transform:scale(.96)}
     <div class="card"><div class="hero" id="st-record">–</div><div class="sub">record</div></div>
   </div>
 
+  <h2>Calendrier</h2>
+  <div class="card">
+    <div class="spread">
+      <button class="ghost small" onclick="calNav(-1)">‹</button>
+      <b id="cal-titre"></b>
+      <button class="ghost small" onclick="calNav(1)">›</button>
+    </div>
+    <div class="cal-grid" id="cal-grid" style="margin-top:8px"></div>
+    <p class="sub" id="cal-detail"></p>
+  </div>
+
   <h2>Volume de la semaine <span class="muted" id="st-vol-note"></span></h2>
   <div class="chips" id="st-semaines"></div>
   <div class="card" id="st-volume"></div>
 
+  <h2>Volume dans le temps</h2>
+  <div id="st-volc-per"></div>
+  <div class="card" id="st-volcourbe"></div>
+
   <h2>Évolution par exercice</h2>
-  <div class="row">
-    <select id="st-exo-sel" style="flex:1" onchange="renderEvolution()"></select>
-    <button class="ghost small" id="st-exo-mode" onclick="toggleEvoMode()">charge</button>
-  </div>
+  <select id="st-exo-sel" style="width:100%" onchange="renderEvolution()"></select>
+  <div id="st-evo-modes" style="margin-top:6px"></div>
   <div class="card" id="st-evo"></div>
 
   <h2>Objectifs</h2>
@@ -206,6 +282,7 @@ button{transition:transform .08s ease} button:active{transform:scale(.96)}
 
   <h2>Mensurations</h2>
   <div class="row"><select id="st-mes-sel" style="flex:1" onchange="renderMesures()"></select></div>
+  <div id="st-mes-per"></div>
   <div class="card" id="st-mes"></div>
 
   <h2>Corrélations</h2>
@@ -253,6 +330,14 @@ button{transition:transform .08s ease} button:active{transform:scale(.96)}
     <p class="muted" id="rg-sync"></p>
   </div>
   <div class="card">
+    <label>Thème</label>
+    <select id="rg-theme" style="width:100%" onchange="setTheme(this.value)">
+      <option value="sombre">Sombre (desk)</option>
+      <option value="clair">Clair</option>
+      <option value="auto">Auto — suivre l'iPhone</option>
+    </select>
+  </div>
+  <div class="card">
     <div class="spread">
       <span><b>Version</b> <span class="num" id="rg-version"></span></span>
       <span id="rg-maj" class="sub">…</span>
@@ -265,6 +350,7 @@ button{transition:transform .08s ease} button:active{transform:scale(.96)}
 
 <nav>
   <button data-v="home" class="on"><span class="ico">🏋️</span>Séance</button>
+  <button data-v="semaine"><span class="ico">📅</span>Semaine</button>
   <button data-v="stats"><span class="ico">📈</span>Stats</button>
   <button data-v="mesures"><span class="ico">📏</span>Mesures</button>
   <button data-v="reglages"><span class="ico">⚙️</span>Réglages</button>
@@ -283,8 +369,8 @@ window.addEventListener('unhandledrejection', (e) => {
   const s = document.getElementById('home-status');
   if (s) s.textContent = '⚠️ Erreur : ' + (e.reason && e.reason.message || e.reason);
 });
-const APP_VERSION = '1.2.0';
-const APP_BUILD = '11/08/2026';
+const APP_VERSION = '2.0.0';
+const APP_BUILD = '28/08/2026';
 const GROUPES = ['Pec','Dos','Epaules','Biceps','Triceps','Quadriceps','Ischios','Fessiers','Mollets','Lombaires','Abdos'];
 const TYPES = [
   {id:'upper_a', nom:'Upper A'}, {id:'upper_b', nom:'Upper B'},
@@ -479,6 +565,7 @@ function show(view){
   $('#view-' + view).classList.add('active');
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
   if (view === 'stats') renderStats();
+  if (view === 'semaine') renderSemaine();
   if (view === 'mesures') renderMesForm();
   if (view === 'reglages') renderReglages();
   if (view === 'home') renderHome();
@@ -510,6 +597,7 @@ function renderHome(){
       <span style="font-size:1.3rem">＋</span></button>`;
   }).join('');
   renderDerniereSeance();
+  majHomeSemaine();
 }
 
 /* --- carte "Derniere seance" : tableau exo par exo, vert/rouge --- */
@@ -611,8 +699,11 @@ function rappelHtml(r, i){
   const charge = r.charge_kg != null ? `<b>${kg(r.charge_kg)} kg</b>` : (r.charge_note ? `<b>${esc(r.charge_note)}</b>` : '<b>—</b>');
   const btn = (r.charge_kg != null || (r.series || []).length)
     ? `<button class="ghost small repr" onclick="reprendreExo(${i})">↺ reprendre</button>` : '';
+  const repsTot = (r.series || []).reduce((a, b) => a + b, 0);
+  const cible = (r.charge_kg != null && repsTot)
+    ? `<br>🎯 À battre : <b>${kg(r.charge_kg)} kg × ${repsTot} reps</b> <span class="muted">— +1 rep ou +charge</span>` : '';
   return `<div class="rappel">${btn}Dernière fois : ${charge}${r.charge_kg != null && r.charge_note ? ' <i>(' + esc(r.charge_note) + ')</i>' : ''}
-    — ${esc(serie)}${r.note ? '<br>📝 ' + esc(r.note) : ''}</div>`;
+    — ${esc(serie)}${r.note ? '<br>📝 ' + esc(r.note) : ''}${cible}</div>`;
 }
 function reprendreExo(i){
   const e = draft.exercices[i], r = e.rappel;
@@ -737,6 +828,250 @@ async function terminerSeance(){
   alert('Séance enregistrée 💪 Elle part sur GitHub dès que tu as du réseau.');
 }
 
+/* ==================== SEMAINE (calcul 100% client : marche hors ligne) ==================== */
+let semaineOffset = 0;
+const normJs = s => String(s || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase().trim().replace(/\s+/g, ' ');
+const canonJs = s => { const n = normJs(s); const al = (dashboard && dashboard.alias) || {}; return al[n] || n; };
+const addJours = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const isoJour = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+function lundiDe(d){ const x = new Date(d); x.setHours(0,0,0,0); x.setDate(x.getDate() - (x.getDay()+6)%7); return x; }
+
+/* modele d'un type FIGE au debut de la semaine affichee : derniere seance STRICTEMENT
+   anterieure au lundi (un exo improvise en cours de semaine va dans "En plus" et
+   n'integre le programme que la semaine suivante — cible stable). */
+function modelePourSemaine(tyId, lundi){
+  const deb = isoJour(lundi);
+  const cands = [];
+  const lbt = lastByType && lastByType[tyId] ? lastByType[tyId].seance : null;
+  if (lbt) cands.push({date: lbt.date || lbt.date_reference || '', full: true, s: lbt});
+  const ll = localLast && localLast[tyId];
+  if (ll) cands.push({date: ll.date || '', full: true, s: ll});
+  for (const s of ((dashboard && dashboard.seances) || []))
+    if (s.type_seance === tyId && s.date) cands.push({date: s.date, full: false, s});
+  const avant = cands.filter(c => c.date && c.date < deb)
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+  const choix = avant[0] || cands.find(c => !c.date) || null;
+  if (!choix) return null;
+  if (choix.full) return choix.s;
+  // bloc dashboard (detail partiel) : on reconstruit series a partir de nb_series + tonnage
+  return {date: choix.s.date, exercices: (choix.s.exos || []).map(e => ({
+    nom: e.nom, groupe: e.groupe, charge_kg: e.charge_max ?? null,
+    series: Array(e.nb_series || 0).fill(
+      (e.metrique === 'tonnage' && e.charge_max && e.nb_series)
+        ? Math.max(1, Math.round(e.valeur / e.charge_max / e.nb_series)) : 0)}))};
+}
+
+/* pool hebdo = union des exos des 5 modeles (figes au lundi), deduplique par nom canonique */
+function poolHebdo(lundi){
+  const pool = new Map();
+  for (const ty of TYPES){
+    const m = modelePourSemaine(ty.id, lundi); if (!m) continue;
+    const md = m.date || m.date_reference || '';
+    for (const e of (m.exercices || [])){
+      const c = canonJs(e.nom);
+      let it = pool.get(c);
+      if (!it){ it = {cle: c, nom: e.nom, groupe: e.groupe || '?', types: [], target: 0,
+                      last: null, lastDate: ''}; pool.set(c, it); }
+      if (!it.types.includes(ty.id)) it.types.push(ty.id);
+      it.target += (e.series || []).length;
+      if (md >= it.lastDate){
+        it.lastDate = md;
+        it.last = {charge: e.charge_kg, charge_note: e.charge_note || null, series: e.series || []};
+      }
+    }
+  }
+  return pool;
+}
+
+/* seances de la semaine : dashboard (batch) + locales pas encore calculees, dedup par id */
+async function seancesDeSemaine(lundi){
+  const deb = isoJour(lundi), fin = isoJour(addJours(lundi, 7));
+  const vues = new Set(), out = [];
+  for (const s of ((dashboard && dashboard.seances) || [])){
+    if (s.date && s.date >= deb && s.date < fin && !vues.has(s.id)){
+      vues.add(s.id);
+      out.push({id: s.id, date: s.date, src: 'dash',
+        exos: s.exos.map(e => ({cle: e.cle || canonJs(e.nom), nom: e.nom, groupe: e.groupe,
+          series: e.nb_series || 0, statut: e.statut,
+          tonnage: e.metrique === 'tonnage' ? (e.valeur || 0) : 0}))});
+    }
+  }
+  const locaux = Object.values(localLast || {});
+  try { for (const q of await idb.all('queue')) if (q.data && q.data.exercices) locaux.push(q.data); }
+  catch (e) { /* idb indisponible : on affiche au moins le batch */ }
+  for (const s of locaux){
+    if (!s || !s.date || s.date < deb || s.date >= fin || vues.has(s.id)) continue;
+    vues.add(s.id);
+    out.push({id: s.id, date: s.date, src: 'local',
+      exos: (s.exercices || []).map(e => {
+        const reps = (e.series || []).reduce((x, b) => x + Number(b || 0), 0);
+        return {cle: canonJs(e.nom), nom: e.nom, groupe: e.groupe,
+          series: (e.series || []).length, statut: null,
+          tonnage: (e.charge_kg != null && reps) ? e.charge_kg * reps : 0};
+      })});
+  }
+  return out;
+}
+
+async function calculeSemaine(lundi){
+  const pool = poolHebdo(lundi);
+  const seances = await seancesDeSemaine(lundi);
+  const faits = new Map();
+  let tonnage = 0;
+  for (const s of seances) for (const e of s.exos){
+    tonnage += e.tonnage || 0;
+    const f = faits.get(e.cle) || {series: 0, dates: [], statuts: [], nom: e.nom, groupe: e.groupe || '?'};
+    f.series += e.series; f.dates.push(s.date);
+    if (e.statut) f.statuts.push(e.statut);
+    faits.set(e.cle, f);
+  }
+  let cibleTot = 0, faitTot = 0, couverts = 0;
+  for (const it of pool.values()){
+    const f = faits.get(it.cle);
+    it.fait = f ? f.series : 0; it.statuts = f ? f.statuts : [];
+    if (it.target > 0){ cibleTot += it.target; faitTot += Math.min(it.fait, it.target); }
+    if (it.fait > 0) couverts++;
+  }
+  const extra = [...faits.entries()].filter(([c]) => !pool.has(c)).map(([, f]) => f);
+  return {pool, extra, seances, tonnage, faitTot, cibleTot,
+    pct: cibleTot ? Math.round(100 * faitTot / cibleTot) : 0,
+    couverts, poolN: pool.size};
+}
+
+function semaineNav(d){ semaineOffset = Math.min(0, semaineOffset + d); renderSemaine(); }
+const TAG_TYPE = ty => ty.split('_').map(w => w[0]).join('').toUpperCase();
+
+function semExoRow(it){
+  const doneFull = it.target ? it.fait >= it.target : it.fait > 0;
+  const etat = doneFull ? '✅' : it.fait > 0 ? '◔' : '○';
+  const repsTot = it.last ? (it.last.series || []).reduce((x, b) => x + b, 0) : 0;
+  const cible = it.last && it.last.charge != null && repsTot
+    ? `à battre : ${kg(it.last.charge)} kg × ${repsTot} reps`
+    : (it.last && it.last.charge_note ? esc(it.last.charge_note) : '');
+  const st = it.statuts.length ? it.statuts[it.statuts.length - 1] : null;
+  const stH = st && STV[st] ? ` <span class="${STV[st][1]}">${STV[st][0]}</span>` : '';
+  const tags = it.types.length > 1 ? ' · ' + it.types.map(TAG_TYPE).join('·') : '';
+  return `<div class="sem-exo ${doneFull ? 'fait' : ''}">
+    <span class="etat">${etat}</span>
+    <span class="nomx">${esc(it.nom)}${stH}<small>${cible}${tags}</small></span>
+    <span class="prog num">${it.fait}/${it.target || '–'}</span>
+  </div>`;
+}
+
+async function renderSemaine(){
+  const lundi = addJours(lundiDe(new Date()), semaineOffset * 7);
+  const dim = addJours(lundi, 6);
+  const nx = $('#sem-next'); if (nx) nx.disabled = semaineOffset >= 0;
+  $('#sem-titre').textContent = (semaineOffset === 0 ? 'Semaine en cours · ' : '') +
+    `du ${fmtDate(isoJour(lundi))} au ${fmtDate(isoJour(dim))}`;
+  const cur = await calculeSemaine(lundi);
+  const prev = await calculeSemaine(addJours(lundi, -7));
+  const dT = prev.tonnage ? Math.round(100 * (cur.tonnage - prev.tonnage) / prev.tonnage) : null;
+  const valide = cur.pct >= 100;
+  $('#sem-resume').innerHTML = `
+    <div class="spread"><b>${valide ? '✅ Semaine validée' : 'Avancement du programme'}</b>
+      <span class="num sub">${cur.faitTot}/${cur.cibleTot} séries</span></div>
+    <div class="wbar ${valide ? 'ok' : ''}" style="margin:8px 0"><div style="width:${Math.min(100, cur.pct)}%"></div><span>${cur.pct}%</span></div>
+    <div class="spread">
+      <span class="sub num">🏋️ ${Math.round(cur.tonnage).toLocaleString('fr-FR')} kg
+        ${dT != null ? `<span class="${dT > 0 ? 'c-vert' : dT < 0 ? 'c-rouge' : 'muted'}">${dT > 0 ? '▲ +' : dT < 0 ? '▼ ' : ''}${dT}% vs S−1</span>` : ''}</span>
+      <span class="sub num">${cur.couverts}/${cur.poolN} exos · ${cur.seances.length} séance(s)</span>
+    </div>`;
+  const parGroupe = new Map();
+  for (const it of cur.pool.values()){
+    if (!parGroupe.has(it.groupe)) parGroupe.set(it.groupe, []);
+    parGroupe.get(it.groupe).push(it);
+  }
+  const ordre = GROUPES.filter(g => parGroupe.has(g))
+    .concat([...parGroupe.keys()].filter(g => !GROUPES.includes(g)));
+  $('#sem-groupes').innerHTML = ordre.map(g => {
+    const items = parGroupe.get(g);
+    const cib = items.reduce((x, y) => x + y.target, 0);
+    const fai = items.reduce((x, y) => x + Math.min(y.fait, y.target || y.fait), 0);
+    const done = items.every(x => x.target ? x.fait >= x.target : x.fait > 0);
+    items.sort((x, y) => ((x.target ? x.fait >= x.target : x.fait > 0) - (y.target ? y.fait >= y.target : y.fait > 0))
+      || x.nom.localeCompare(y.nom));
+    return `<div class="card">
+      <div class="spread"><b>${done ? '✅ ' : ''}${esc(g)}</b><span class="sub num">${fai}/${cib} séries</span></div>
+      ${items.map(semExoRow).join('')}
+    </div>`;
+  }).join('');
+  $('#sem-extra').innerHTML = cur.extra.length ? `<div class="card">
+    <b>En plus du programme</b>
+    ${cur.extra.map(f => `<div class="sem-exo"><span class="etat">＋</span>
+      <span class="nomx">${esc(f.nom)}</span><span class="prog num">${f.series} séries</span></div>`).join('')}
+    <p class="muted" style="margin:6px 0 0">Compte dans le volume, pas dans le % du programme.</p></div>` : '';
+}
+
+async function majHomeSemaine(){
+  const el = $('#home-semaine'); if (!el) return;
+  try {
+    const cur = await calculeSemaine(lundiDe(new Date()));
+    el.innerHTML = `<button class="type-card" onclick="show('semaine')" style="padding:10px 16px">
+      <span class="sub">📅 Semaine : <b class="num c-${cur.pct >= 100 ? 'vert' : 'bleu'}">${cur.pct}%</b>
+        · <span class="num">${cur.faitTot}/${cur.cibleTot}</span> séries
+        · 🏋️ <span class="num">${Math.round(cur.tonnage).toLocaleString('fr-FR')} kg</span></span>
+      <span>›</span></button>`;
+  } catch (e){ el.innerHTML = ''; }
+}
+
+/* ==================== CALENDRIER (derive de dashboard.seances + local) ==================== */
+let calMois = null, calSel = null;
+function calNav(d){ if (!calMois) return; calMois.setMonth(calMois.getMonth() + d); calSel = null; renderCalendrier(); }
+function renderCalendrier(){
+  const grid = $('#cal-grid'); if (!grid) return;
+  if (!calMois){ calMois = new Date(); calMois.setDate(1); }
+  const y = calMois.getFullYear(), m = calMois.getMonth();
+  $('#cal-titre').textContent = calMois.toLocaleDateString('fr-FR', {month: 'long', year: 'numeric'});
+  const parJour = {};
+  for (const s of ((dashboard && dashboard.seances) || []))
+    if (s.date) (parJour[s.date] = parJour[s.date] || []).push(s);
+  for (const s of Object.values(localLast || {}))
+    if (s && s.date && !(parJour[s.date] || []).some(x => x.id === s.id))
+      (parJour[s.date] = parJour[s.date] || []).push({id: s.id, date: s.date, nom: s.nom, couleur: 'bleu', tonnage: null});
+  const start = (new Date(y, m, 1).getDay() + 6) % 7;
+  const nb = new Date(y, m + 1, 0).getDate();
+  const today = isoJour(new Date());
+  const CC = {vert: 'var(--good)', jaune: 'var(--warn)', gris: 'var(--bad)', bleu: 'var(--s1)', rouge: 'var(--crit)'};
+  let html = ['Lu','Ma','Me','Je','Ve','Sa','Di'].map(d => `<span class="dow">${d}</span>`).join('');
+  for (let i = 0; i < start; i++) html += '<span></span>';
+  for (let j = 1; j <= nb; j++){
+    const dstr = `${y}-${String(m+1).padStart(2,'0')}-${String(j).padStart(2,'0')}`;
+    const ss = parJour[dstr] || [];
+    html += `<button class="cal-day ${dstr === today ? 'today' : ''} ${calSel === dstr ? 'sel' : ''}"
+      onclick="calSel='${dstr}';renderCalendrier()">${j}
+      <span class="pips">${ss.slice(0, 3).map(s => `<span class="pip" style="background:${CC[s.couleur] || 'var(--s1)'}"></span>`).join('')}</span>
+    </button>`;
+  }
+  grid.innerHTML = html;
+  const sel = calSel && parJour[calSel];
+  $('#cal-detail').innerHTML = sel
+    ? `<b>${fmtDate(calSel)}</b> — ` + sel.map(s =>
+        `${esc(s.nom || s.type_seance)}${s.tonnage != null ? ' · <span class="num">' + Math.round(s.tonnage).toLocaleString('fr-FR') + ' kg</span>' : ' · en attente de calcul'}${s.pct_progression != null ? ' · ' + s.pct_progression + '% prog.' : ''}`).join(' | ')
+    : (calSel ? `<b>${fmtDate(calSel)}</b> — repos.` : 'Touche un jour pour le détail.');
+}
+
+/* ==================== PERIODES (composant chips reutilisable) ==================== */
+let periodes = JSON.parse(localStorage.getItem('muscu_per') || '{}');
+const PER_CODES = ['1M', '3M', '6M', '1A', 'TOUT'];
+function chipsPeriode(cle){
+  const cur = periodes[cle] || '6M';
+  return `<div class="chips">${PER_CODES.map(c =>
+    `<button class="ghost small per ${c === cur ? 'on' : ''}" onclick="setPeriode('${cle}','${c}')">${c}</button>`).join('')}</div>`;
+}
+function setPeriode(cle, c){
+  periodes[cle] = c; localStorage.setItem('muscu_per', JSON.stringify(periodes));
+  ({evo: renderEvolution, vol: renderVolumeCourbe, mes: renderMesures})[cle]();
+}
+function filtrePeriode(pts, cle){
+  const c = periodes[cle] || '6M';
+  if (c === 'TOUT') return pts;
+  const lim = new Date(); lim.setMonth(lim.getMonth() - {'1M':1, '3M':3, '6M':6, '1A':12}[c]);
+  const l = isoJour(lim);
+  return pts.filter(pt => pt.x >= l);
+}
+
 /* ==================== STATS ==================== */
 function renderStats(){
   const d = dashboard;
@@ -745,7 +1080,8 @@ function renderStats(){
   if (!d) return;
   $('#st-streak').textContent = d.streak.actuel;
   $('#st-record').textContent = d.streak.record;
-  renderSemaines(d); renderExoSelect(d); renderObjectifs(d);
+  renderCalendrier(); renderSemaines(d); renderVolumeCourbe();
+  renderExoSelect(d); renderObjectifs(d);
   renderSeancesList(d); renderSante(d); renderMesuresSelect(d); renderCorrSelects(d);
 }
 
@@ -781,23 +1117,81 @@ function renderExoSelect(d){
   if (keys.includes(cur)) sel.value = cur;
   renderEvolution();
 }
-function toggleEvoMode(){ evoMode = evoMode === 'charge' ? 'valeur' : 'charge';
-  $('#st-exo-mode').textContent = evoMode === 'charge' ? 'charge' : 'tonnage'; renderEvolution(); }
+const EVO_MODES = [['charge','Charge'], ['reps','Reps'], ['tonnage','Tonnage'], ['e1rm','e1RM']];
 function renderEvolution(){
   const d = dashboard; if (!d) return;
+  const box = $('#st-evo');
+  $('#st-evo-modes').innerHTML =
+    `<div class="chips">${EVO_MODES.map(([m, l]) =>
+      `<button class="ghost small per ${m === evoMode ? 'on' : ''}" onclick="evoMode='${m}';renderEvolution()">${l}</button>`).join('')}</div>`
+    + chipsPeriode('evo');
   const k = $('#st-exo-sel').value;
   const ev = d.evolution_exos[k];
-  if (!ev){ $('#st-evo').innerHTML = '<p class="muted">Choisis un exercice.</p>'; return; }
-  const pts = ev.points
-    .map(p => ({x: p.date, y: evoMode === 'charge' ? p.charge_max : (p.metrique === 'tonnage' ? p.valeur : null)}))
-    .filter(p => p.x && p.y != null);
-  $('#st-evo').innerHTML = pts.length >= 2 ? lineSvg(pts, evoMode === 'charge' ? 'kg' : 'kg (tonnage)', 'evo')
-    : '<p class="muted">Pas assez de points avec cette métrique.</p>';
+  if (!ev){ box.innerHTML = '<p class="muted">Choisis un exercice.</p>'; return; }
+  const enrichi = ev.points.some(pt => pt.reps_totales != null || pt.e1rm != null);
+  if ((evoMode === 'reps' || evoMode === 'e1rm') && !enrichi){
+    box.innerHTML = '<p class="muted">Vue disponible après le prochain calcul quotidien.</p>'; return;
+  }
+  let pts = ev.points.map(pt => ({x: pt.date,
+      y: evoMode === 'charge' ? pt.charge_max
+       : evoMode === 'reps' ? (pt.reps_totales != null ? pt.reps_totales : null)
+       : evoMode === 'tonnage' ? (pt.metrique === 'tonnage' ? pt.valeur : null)
+       : (pt.e1rm != null ? pt.e1rm : null),
+      charge: pt.charge_max, series: pt.series || []}))
+    .filter(pt => pt.x && pt.y != null);
+  pts = filtrePeriode(pts, 'evo');
+  if (pts.length < 2){
+    box.innerHTML = '<p class="muted">Pas assez de points sur la période (min 2)'
+      + (evoMode === 'e1rm' ? " — l'e1RM n'est estimé que sur les séries ≤ 15 reps." : '.') + '</p>';
+    return;
+  }
+  const unites = {charge: 'kg', reps: 'reps', tonnage: 'kg', e1rm: 'kg e1RM'};
+  const opts = {step: evoMode === 'charge',
+    info: pt => `<b>${fmtDate(pt.x)}</b> · ${kg(pt.y)} ${unites[evoMode]}`
+      + (evoMode !== 'charge' && pt.charge != null ? ` <span class="muted">@ ${kg(pt.charge)} kg</span>` : '')
+      + (pt.series && pt.series.length ? ` <span class="muted">(${pt.series.join('-')})</span>` : '')};
+  if (evoMode === 'reps')
+    opts.annot = (pt, i, prev) => (prev && pt.charge != null && pt.charge !== prev.charge) ? '@' + kg(pt.charge) : null;
+  box.innerHTML = lineSvg(pts, unites[evoMode], 'evo', opts);
+}
+
+/* --- volume dans le temps : tonnage hebdo, semaines vides = 0 (honnete) --- */
+function mondayOfIsoWeek(key){
+  const [y, w] = key.split('-W').map(Number);
+  const base = lundiDe(new Date(y, 0, 4));
+  base.setDate(base.getDate() + (w - 1) * 7);
+  return base;
+}
+function renderVolumeCourbe(){
+  const d = dashboard; const box = $('#st-volcourbe'); if (!d || !box) return;
+  $('#st-volc-per').innerHTML = chipsPeriode('vol');
+  const keys = Object.keys(d.volume_hebdo || {}).sort();
+  if (!keys.length){ box.innerHTML = '<p class="muted">Aucune séance loguée.</p>'; return; }
+  const info = {};
+  for (const k2 of keys){
+    const v = d.volume_hebdo[k2];
+    info[isoJour(mondayOfIsoWeek(k2))] = {
+      t: Object.values(v).reduce((a, x) => a + (x.tonnage || 0), 0),
+      s: Object.values(v).reduce((a, x) => a + (x.series || 0), 0)};
+  }
+  const dates = Object.keys(info).sort();
+  let cur = new Date(dates[0] + 'T00:00');
+  const fin = lundiDe(new Date());  // semaine en cours exclue : elle n'est pas finie
+  const pts = [];
+  while (cur < fin){
+    const key = isoJour(cur);
+    pts.push({x: key, y: info[key] ? Math.round(info[key].t) : 0, s: info[key] ? info[key].s : 0});
+    cur = addJours(cur, 7);
+  }
+  const fp = filtrePeriode(pts, 'vol');
+  box.innerHTML = fp.length >= 2
+    ? lineSvg(fp, 'kg', 'volc', {info: pt => `<b>sem. du ${fmtDate(pt.x)}</b> · ${pt.y.toLocaleString('fr-FR')} kg · ${pt.s} séries`})
+    : '<p class="muted">Pas assez de semaines dans la période.</p>';
 }
 
 /* --- graphique ligne SVG generique, interactif (toucher/glisser = inspecter) --- */
 const CHARTS = {};  // id -> geometrie + points, pour l'inspection tactile
-function lineSvg(pts, unit, id){
+function lineSvg(pts, unit, id, opts = {}){
   const W = 340, H = 170, P = {l: 34, r: 12, t: 14, b: 22};
   const ys = pts.map(p => p.y);
   let y0 = Math.min(...ys), y1 = Math.max(...ys);
@@ -813,7 +1207,7 @@ function lineSvg(pts, unit, id){
     `<circle cx="${X(i)}" cy="${Y(p.y)}" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"></circle>`).join('');
   const first = pts[0], last = pts[pts.length - 1];
   id = id || 'g' + Math.floor(Math.random() * 1e6);
-  CHARTS[id] = {type: 'line', pts, unit, W, H,
+  CHARTS[id] = {type: 'line', pts, unit, W, H, info: opts.info || null,
     X: pts.map((p, i) => X(i)), Y: pts.map(p => Y(p.y)), top: P.t, bottom: H - P.b};
   const dTot = Math.round((last.y - first.y) * 10) / 10;
   const defTxt = `<b>${kg(last.y)} ${unit}</b> <span class="${dTot > 0 ? 'c-vert' : dTot < 0 ? 'c-rouge' : 'muted'}">${dTot > 0 ? '+' : ''}${dTot.toLocaleString('fr-FR')} depuis ${fmtDate(first.x)}</span>`;
@@ -822,7 +1216,11 @@ function lineSvg(pts, unit, id){
   <svg viewBox="0 0 ${W} ${H}" style="width:100%" class="chart-tap" data-chart="${id}">
     ${grid}
     <line x1="${P.l}" x2="${W-P.r}" y1="${H-P.b}" y2="${H-P.b}" stroke="var(--axis)" stroke-width="1"/>
-    <polyline points="${line}" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"/>
+    ${opts.step
+      ? `<path d="${pts.map((pt, i) => (i ? `H${X(i).toFixed(1)}V${Y(pt.y).toFixed(1)}` : `M${X(0).toFixed(1)} ${Y(pt.y).toFixed(1)}`)).join('')}" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"/>`
+      : `<polyline points="${line}" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"/>`}
+    ${opts.annot ? pts.map((pt, i) => { const lab = opts.annot(pt, i, i ? pts[i-1] : null);
+      return lab ? `<text x="${X(i).toFixed(1)}" y="${(Y(pt.y)-9).toFixed(1)}" text-anchor="middle" class="vtxt num">${lab}</text>` : ''; }).join('') : ''}
     ${dots}
     <line id="ch-${id}" x1="0" x2="0" y1="${P.t}" y2="${H-P.b}" stroke="var(--axis)" stroke-dasharray="3 3" visibility="hidden"/>
     <circle id="hp-${id}" r="6.5" fill="var(--s1)" stroke="var(--surface)" stroke-width="2.5" visibility="hidden"/>
@@ -846,7 +1244,7 @@ function chartInspect(ev){
   const p = c.pts[best];
   const ro = document.getElementById('ro-' + svg.dataset.chart);
   if (ro) ro.innerHTML = c.type === 'line'
-    ? `<b>${fmtDate(p.x)}</b> · ${kg(p.y)} ${c.unit}`
+    ? (c.info ? c.info(p) : `<b>${fmtDate(p.x)}</b> · ${kg(p.y)} ${c.unit}`)
     : `<b>${p.label}</b> · ${c.xl} : <b>${p.x.toLocaleString('fr-FR')}</b> · ${c.yl} : <b>${p.y.toLocaleString('fr-FR')}</b>`;
   const ln = document.getElementById('ch-' + svg.dataset.chart);
   if (ln){ ln.setAttribute('x1', c.X[best]); ln.setAttribute('x2', c.X[best]); ln.setAttribute('visibility', 'visible'); }
@@ -965,6 +1363,7 @@ function renderMesuresSelect(d){
   sel.innerHTML = opts.join('');
   if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
   else if (hv.includes('poids_kg')) sel.value = 'h:poids_kg';
+  const per = $('#st-mes-per'); if (per) per.innerHTML = chipsPeriode('mes');
   renderMesures();
 }
 function renderMesures(){
@@ -979,8 +1378,9 @@ function renderMesures(){
   } else if (src === 'm'){
     pts = (d.mesures || []).map(m => ({x: m.date, y: m[k]})).filter(p => p.x && p.y != null);
   }
+  pts = filtrePeriode(pts, 'mes');
   $('#st-mes').innerHTML = pts.length >= 2 ? lineSvg(pts, unit, 'mes')
-    : '<p class="muted">Pas assez de points (min 2).</p>';
+    : '<p class="muted">Pas assez de points sur la période (min 2).</p>';
 }
 
 /* --- correlations : nuage de points interactif, libelles en francais --- */
@@ -1065,7 +1465,12 @@ async function enregistrerMesures(){
 }
 
 /* ==================== RÉGLAGES ==================== */
+function setTheme(v){
+  localStorage.setItem('muscu_theme', v);
+  document.documentElement.dataset.theme = v;
+}
 function renderReglages(){
+  $('#rg-theme').value = localStorage.getItem('muscu_theme') || 'sombre';
   $('#rg-owner').value = cfg.owner || '';
   $('#rg-repo').value = cfg.repo || 'muscu-data';
   $('#rg-branch').value = cfg.branch || 'main';
