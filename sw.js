@@ -1,5 +1,5 @@
 /* Service worker — cache-first sur l'app shell, réseau direct pour l'API GitHub. */
-const CACHE = 'muscu-v5';
+const CACHE = 'muscu-v6';
 const SHELL = ['./', './index.html', './manifest.webmanifest',
   './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 

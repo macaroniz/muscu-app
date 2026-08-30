@@ -137,6 +137,18 @@ button{transition:transform .08s ease} button:active{transform:scale(.96)}
 .mini td:nth-child(3){text-align:right; font-weight:600; width:64px; white-space:nowrap}
 .chart-tap{touch-action:pan-y}
 .repr{float:right; margin-left:8px}
+/* --- saisie v2.1 --- */
+.exo-head{touch-action:none; cursor:grab; padding:2px 0}
+.exo.dragging{opacity:.9; transform:scale(1.02); box-shadow:0 10px 28px rgba(0,0,0,.45);
+  position:relative; z-index:10; border-color:var(--s1)}
+.valbadge{font-size:.78rem; font-weight:700; white-space:nowrap}
+.schip{display:flex; flex-direction:column; gap:2px}
+.schip .skg{width:58px; font-size:.78rem; padding:4px 2px; min-height:30px; color:var(--ink2)}
+.series-row button.on{background:var(--s1); color:#fff; border-color:var(--s1)}
+.degblock{border-left:3px solid var(--s1); background:var(--plane); border-radius:10px;
+  padding:10px; margin-top:10px}
+.degblock.done > .spread b::after{content:' ✓'; color:var(--good)}
+.graphpanel{margin:8px 0}
 /* --- semaine --- */
 .wbar{background:var(--plane); border-radius:8px; height:22px; position:relative; overflow:hidden}
 .wbar>div{height:100%; background:var(--s1); border-radius:8px 4px 4px 8px; min-width:2px;
@@ -217,7 +229,8 @@ button{transition:transform .08s ease} button:active{transform:scale(.96)}
     <textarea id="se-note" onchange="draftMeta()"></textarea>
   </div>
   <button style="width:100%" onclick="terminerSeance()">✓ Terminer la séance</button>
-  <p class="muted" style="text-align:center">Sauvegarde automatique à chaque frappe — tu peux fermer sans rien perdre.</p>
+  <p class="muted" style="text-align:center">Sauvegarde automatique à chaque frappe — tu peux fermer sans rien perdre.<br>
+  Touche le <b>nom</b> d'un exo pour son graphique · <b>reste appuyé</b> sur son en-tête pour le déplacer · ⚖️ pour des charges par série.</p>
 </div>
 
 <!-- ======================= SEMAINE ======================= -->
@@ -369,8 +382,8 @@ window.addEventListener('unhandledrejection', (e) => {
   const s = document.getElementById('home-status');
   if (s) s.textContent = '⚠️ Erreur : ' + (e.reason && e.reason.message || e.reason);
 });
-const APP_VERSION = '2.0.0';
-const APP_BUILD = '28/08/2026';
+const APP_VERSION = '2.1.0';
+const APP_BUILD = '31/08/2026';
 const GROUPES = ['Pec','Dos','Epaules','Biceps','Triceps','Quadriceps','Ischios','Fessiers','Mollets','Lombaires','Abdos'];
 const TYPES = [
   {id:'upper_a', nom:'Upper A'}, {id:'upper_b', nom:'Upper B'},
@@ -383,7 +396,7 @@ const CORR_VARS = ['tonnage','pct_progression','sommeil_h','sommeil_h_j1','kcal'
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmtDate = d => d ? new Date(d + 'T00:00').toLocaleDateString('fr-FR', {day:'numeric', month:'short'}) : '?';
-const today = () => new Date().toISOString().slice(0,10);
+const today = () => isoJour(new Date());
 const kg = v => (v == null ? '–' : (Math.round(v*10)/10).toLocaleString('fr-FR'));
 const relJours = d => {
   if (!d) return '';
@@ -659,10 +672,22 @@ function nouvelExo(nom, groupe, rappel, degDe){
 }
 function faite(e){ return e.charge_kg !== '' || e.series.some(x => x !== '') || (e.note && e.note.trim()); }
 
+/* tonnage + charge max d'une saisie, charges par serie comprises */
+function tonnageEntree(charge, series, customs){
+  let t = 0, cm = null;
+  (series || []).forEach((r, j) => {
+    const rr = Number(r);
+    if (!rr) return;
+    const cj = customs && customs[j] != null && customs[j] !== '' ? Number(customs[j]) : charge;
+    if (cj != null && !isNaN(cj)){ t += cj * rr; cm = cm == null ? cj : Math.max(cm, cj); }
+  });
+  return {t, cm};
+}
+
 async function demarrerSeance(type){
   if (draft && draft.type_seance !== type &&
       !confirm('Une séance "' + draft.nom + '" est en cours. La remplacer ?')) return;
-  if (draft && draft.type_seance === type) { show('seance'); return; }
+  if (draft && draft.type_seance === type) { show('seance'); renderSaisie(); return; }
   const model = modelFor(type);
   const t = TYPES.find(x => x.id === type);
   draft = {
@@ -671,7 +696,8 @@ async function demarrerSeance(type){
     lieu: model && model.lieu ? model.lieu : '', note_seance: '',
     exercices: (model ? model.exercices : []).map(e => nouvelExo(
       e.nom, e.groupe, {charge_kg: e.charge_kg, charge_note: e.charge_note || null,
-        series: e.series || [], series_note: e.series_note || null, note: e.note || null},
+        series: e.series || [], series_note: e.series_note || null,
+        series_charges: e.series_charges || null, note: e.note || null},
       e.degressif_de || (/\(degressif\)/i.test(e.nom) ? e.nom.replace(/\s*\(degressif\)\s*/i, '').trim() : null))),
   };
   await saveDraft();
@@ -679,8 +705,20 @@ async function demarrerSeance(type){
 }
 async function saveDraft(){ if (draft) await idb.set('kv', 'draft', draft); }
 
+/* cartes = exos parents ; les degressifs qui suivent sont imbriques dedans */
+function cartesSaisie(){
+  const cards = [];
+  for (let i = 0; i < draft.exercices.length; i++){
+    const e = draft.exercices[i];
+    if (e.degressif_de && cards.length){ cards[cards.length - 1].degs.push(i); continue; }
+    cards.push({idx: i, degs: []});
+  }
+  return cards;
+}
+
 function renderSaisie(){
   if (!draft) { show('home'); return; }
+  graphOuvert = null;
   $('#se-titre').textContent = draft.nom + ' — ' + fmtDate(draft.date);
   $('#se-lieu').value = draft.lieu || '';
   $('#se-note').value = draft.note_seance || '';
@@ -690,87 +728,179 @@ function renderSaisie(){
   const tick = () => { const m = Math.max(0, Math.round((Date.now() - t0) / 60000));
     $('#se-chrono').textContent = `⏱ ${Math.floor(m/60)}h${String(m%60).padStart(2,'0')}`; };
   tick(); chronoTimer = setInterval(tick, 30000);
-  $('#se-exos').innerHTML = draft.exercices.map((e, i) => exoHtml(e, i)).join('');
+  $('#se-exos').innerHTML = cartesSaisie().map(c => exoCard(c)).join('');
+  draft.exercices.forEach((_, i) => majExoVisu(i));
   majTonnageLive();
 }
+
 function rappelHtml(r, i){
   if (!r) return '<div class="rappel">Nouvel exercice — pas d\'historique</div>';
-  const serie = (r.series && r.series.length) ? r.series.join(' · ') : (r.series_note || '—');
+  const perSerie = Array.isArray(r.series_charges) && r.series_charges.some(c => c != null);
+  const serie = (r.series && r.series.length)
+    ? (perSerie
+        ? r.series.map((rep, j) => {
+            const c = r.series_charges[j] != null ? r.series_charges[j] : r.charge_kg;
+            return (c != null ? kg(c) + '×' : '') + rep;
+          }).join(' · ')
+        : r.series.join(' · '))
+    : (r.series_note || '—');
   const charge = r.charge_kg != null ? `<b>${kg(r.charge_kg)} kg</b>` : (r.charge_note ? `<b>${esc(r.charge_note)}</b>` : '<b>—</b>');
   const btn = (r.charge_kg != null || (r.series || []).length)
     ? `<button class="ghost small repr" onclick="reprendreExo(${i})">↺ reprendre</button>` : '';
-  const repsTot = (r.series || []).reduce((a, b) => a + b, 0);
-  const cible = (r.charge_kg != null && repsTot)
-    ? `<br>🎯 À battre : <b>${kg(r.charge_kg)} kg × ${repsTot} reps</b> <span class="muted">— +1 rep ou +charge</span>` : '';
+  const prev = tonnageEntree(r.charge_kg, r.series || [], r.series_charges || null);
+  const cible = prev.t
+    ? `<br>🎯 À battre : <b>${Math.round(prev.t).toLocaleString('fr-FR')} kg de volume</b>` +
+      (r.charge_kg != null ? ` <span class="muted">(${kg(r.charge_kg)} kg × ${(r.series||[]).reduce((a,b)=>a+b,0)} reps — +1 rep ou +charge)</span>` : '')
+    : '';
   return `<div class="rappel">${btn}Dernière fois : ${charge}${r.charge_kg != null && r.charge_note ? ' <i>(' + esc(r.charge_note) + ')</i>' : ''}
     — ${esc(serie)}${r.note ? '<br>📝 ' + esc(r.note) : ''}${cible}</div>`;
 }
+
 function reprendreExo(i){
   const e = draft.exercices[i], r = e.rappel;
   if (!r) return;
   if (r.charge_kg != null) e.charge_kg = r.charge_kg;
   if ((r.series || []).length) e.series = [...r.series];
+  if (Array.isArray(r.series_charges) && r.series_charges.some(c => c != null))
+    e.series_charges = [...r.series_charges];
   if (r.charge_note && !e.charge_note) e.charge_note = r.charge_note;
   saveDraft(); renderSaisie();
 }
+
+/* --- validation live : ai-je battu la derniere fois ? --- */
+function statutSaisie(e){
+  const cur = tonnageEntree(e.charge_kg === '' || e.charge_kg == null ? null : Number(e.charge_kg),
+                            e.series, e.series_charges || null);
+  if (!cur.t && cur.cm == null) return null;                    // rien de chiffrable saisi
+  const r = e.rappel;
+  if (!r) return {cls: 'c-bleu', txt: '● nouveau'};
+  const prev = tonnageEntree(r.charge_kg, r.series || [], r.series_charges || null);
+  if (!prev.t) return {cls: 'c-bleu', txt: '● nouveau'};
+  if (cur.t > prev.t || (prev.cm != null && cur.cm != null && cur.cm > prev.cm))
+    return {cls: 'c-vert', txt: '✓ validé'};
+  const nbFait = e.series.filter(v => Number(v) > 0).length;
+  const fini = nbFait >= (r.series || []).length;
+  if (fini && cur.t === prev.t && cur.cm === prev.cm) return {cls: 'c-jaune', txt: '＝ égalé'};
+  if (fini) return {cls: 'c-rouge', txt: `✗ −${Math.round(prev.t - cur.t).toLocaleString('fr-FR')} kg`};
+  return {cls: 'muted', txt: `reste ${Math.max(0, Math.round(prev.t - cur.t)).toLocaleString('fr-FR')} kg`};
+}
+
 function majExoVisu(i){
-  const el = $('#exo-' + i);
+  const el = document.getElementById('exo-' + i);
   if (el) el.classList.toggle('done', faite(draft.exercices[i]));
+  const b = document.getElementById('val-' + i);
+  if (b){ const st = statutSaisie(draft.exercices[i]);
+    b.className = 'valbadge num ' + (st ? st.cls : '');
+    b.textContent = st ? st.txt : ''; }
 }
 function majTonnageLive(){
   let t = 0;
   for (const e of (draft ? draft.exercices : [])){
-    const c = e.charge_kg === '' || e.charge_kg == null ? null : Number(e.charge_kg);
-    const reps = e.series.filter(x => x !== '' && x != null).reduce((a, b) => a + Number(b), 0);
-    if (c != null && !isNaN(c) && reps) t += c * reps;
+    t += tonnageEntree(e.charge_kg === '' || e.charge_kg == null ? null : Number(e.charge_kg),
+                       e.series, e.series_charges || null).t;
   }
   const el = $('#se-tonnage');
   if (el) el.textContent = t ? '🏋️ ' + Math.round(t).toLocaleString('fr-FR') + ' kg' : '';
 }
-function exoHtml(e, i){
-  const series = e.series.map((v, j) =>
-    `<input type="number" inputmode="numeric" placeholder="reps" value="${v}"
-      onchange="setSerie(${i},${j},this.value)">`).join('');
-  return `<div class="exo ${e.degressif_de ? 'deg' : ''} ${faite(e) ? 'done' : ''}" id="exo-${i}">
-    <div class="spread">
-      <span class="nom">${e.degressif_de ? '↳ ' : ''}${esc(e.nom)}</span>
-      <span class="grp">${esc(e.groupe)}</span>
-    </div>
-    ${rappelHtml(e.rappel, i)}
-    <div class="row">
+
+/* --- rendu d'une carte : exo parent + degressifs imbriques --- */
+function serieChips(e, i){
+  const per = Array.isArray(e.series_charges);
+  const chips = e.series.map((v, j) => per
+    ? `<span class="schip">
+         <input type="number" inputmode="numeric" placeholder="reps" value="${v}" onchange="setSerie(${i},${j},this.value)">
+         <input type="number" inputmode="decimal" step="0.5" class="skg num"
+           placeholder="${e.charge_kg !== '' && e.charge_kg != null ? esc(String(e.charge_kg)) : 'kg'}"
+           value="${e.series_charges[j] != null ? e.series_charges[j] : ''}"
+           onchange="setSerieCharge(${i},${j},this.value)">
+       </span>`
+    : `<input type="number" inputmode="numeric" placeholder="reps" value="${v}"
+         onchange="setSerie(${i},${j},this.value)">`).join('');
+  return `<div class="series-row">${chips}
+    <button class="ghost small" onclick="addSerie(${i})">+ série</button>
+    <button class="ghost small ${per ? 'on' : ''}" onclick="togglePerSerie(${i})"
+      title="charge différente par série">⚖️${per ? ' ✓' : ''}</button>
+  </div>`;
+}
+function inputsBloc(e, i){
+  return `<div class="row">
       <input class="charge-in num" type="number" inputmode="decimal" step="0.5" placeholder="kg"
         value="${e.charge_kg}" onchange="setExo(${i},'charge_kg',this.value)">
       <input style="flex:1" placeholder="précision (PDC, élastique…)" value="${esc(e.charge_note)}"
         onchange="setExo(${i},'charge_note',this.value)">
     </div>
-    <div class="series-row">${series}
-      <button class="ghost small" onclick="addSerie(${i})">+ série</button>
+    ${serieChips(e, i)}
+    <input class="note-in" placeholder="note technique (exécution, sensations…)" value="${esc(e.note)}"
+      onchange="setExo(${i},'note',this.value)">`;
+}
+function degBloc(j){
+  const e = draft.exercices[j];
+  return `<div class="degblock" id="exo-${j}">
+    <div class="spread">
+      <b>↳ Dégressif</b>
+      <span class="row"><span class="valbadge num" id="val-${j}"></span>
+        <button class="ghost small" style="color:var(--crit)" onclick="retirerExo(${j})">✕</button></span>
     </div>
-    <input class="note-in" placeholder="note technique" value="${esc(e.note)}"
-      onchange="setExo(${i},'note',this.value)">
+    ${rappelHtml(e.rappel, j)}
+    ${inputsBloc(e, j)}
+  </div>`;
+}
+function exoCard(c){
+  const e = draft.exercices[c.idx];
+  return `<div class="exo" id="exo-${c.idx}" data-idx="${c.idx}">
+    <div class="spread exo-head" data-drag="${c.idx}">
+      <span class="nom" onclick="toggleGraph(${c.idx})">${esc(e.nom)} <span class="muted" style="font-weight:400">📈</span></span>
+      <span class="row" style="gap:6px">
+        <span class="valbadge num" id="val-${c.idx}"></span>
+        <span class="grp">${esc(e.groupe)}</span>
+      </span>
+    </div>
+    <div class="graphpanel" id="gp-${c.idx}" style="display:none"></div>
+    ${rappelHtml(e.rappel, c.idx)}
+    ${inputsBloc(e, c.idx)}
+    ${c.degs.map(degBloc).join('')}
     <div class="row" style="margin-top:8px">
-      ${e.degressif_de ? '' : `<button class="ghost small" onclick="addDegressif(${i})">+ dégressif</button>`}
-      <button class="ghost small" style="color:var(--crit)" onclick="retirerExo(${i})">retirer</button>
+      <button class="ghost small" onclick="addDegressif(${c.idx})">+ dégressif</button>
+      <button class="ghost small" style="color:var(--crit)" onclick="retirerExo(${c.idx})">retirer</button>
     </div>
   </div>`;
 }
-function setExo(i, champ, v){ draft.exercices[i][champ] = v; saveDraft(); majExoVisu(i); majTonnageLive(); }
+
+function setExo(i, champ, v){
+  draft.exercices[i][champ] = v; saveDraft();
+  if (champ === 'charge_kg' && Array.isArray(draft.exercices[i].series_charges)){ renderSaisie(); return; }
+  majExoVisu(i); majTonnageLive();
+}
 function setSerie(i, j, v){ draft.exercices[i].series[j] = v === '' ? '' : Number(v); saveDraft(); majExoVisu(i); majTonnageLive(); }
+function setSerieCharge(i, j, v){
+  const e = draft.exercices[i];
+  if (!Array.isArray(e.series_charges)) e.series_charges = [];
+  e.series_charges[j] = v === '' ? null : Number(v);
+  saveDraft(); majExoVisu(i); majTonnageLive();
+}
+function togglePerSerie(i){
+  const e = draft.exercices[i];
+  if (Array.isArray(e.series_charges)){
+    if (e.series_charges.some(v => v != null) && !confirm('Retirer les charges par série ?')) return;
+    delete e.series_charges;
+  } else e.series_charges = [];
+  saveDraft(); renderSaisie();
+}
 function addSerie(i){ draft.exercices[i].series.push(''); saveDraft(); renderSaisie(); }
 function addDegressif(i){
   const p = draft.exercices[i];
   const nomDeg = p.nom + ' (degressif)';
-  // rappel : chercher la degressive correspondante dans le modele
   const model = modelFor(draft.type_seance);
   let r = null;
   if (model) {
     const prev = (model.exercices || []).find(x => x.nom.toLowerCase() === nomDeg.toLowerCase());
     if (prev) r = {charge_kg: prev.charge_kg, charge_note: prev.charge_note || null,
-      series: prev.series || [], series_note: prev.series_note || null, note: prev.note || null};
+      series: prev.series || [], series_note: prev.series_note || null,
+      series_charges: prev.series_charges || null, note: prev.note || null};
   }
   draft.exercices.splice(i + 1, 0, nouvelExo(nomDeg, p.groupe, r, p.nom));
   saveDraft(); renderSaisie();
-  setTimeout(() => { const el = $('#exo-' + (i + 1)); if (el) el.scrollIntoView({block: 'center'}); }, 50);
+  setTimeout(() => { const el = document.getElementById('exo-' + (i + 1)); if (el) el.scrollIntoView({block: 'center'}); }, 50);
 }
 function ajouterExo(){
   const nom = $('#se-new-nom').value.trim();
@@ -782,24 +912,153 @@ function ajouterExo(){
 }
 function retirerExo(i){
   if (!confirm('Retirer "' + draft.exercices[i].nom + '" de cette séance ?')) return;
-  draft.exercices.splice(i, 1); saveDraft(); renderSaisie();
+  // retirer un parent retire aussi ses degressives attachees
+  let n = 1;
+  if (!draft.exercices[i].degressif_de)
+    while (i + n < draft.exercices.length && draft.exercices[i + n].degressif_de) n++;
+  draft.exercices.splice(i, n); saveDraft(); renderSaisie();
 }
 function draftMeta(){
   draft.lieu = $('#se-lieu').value; draft.note_seance = $('#se-note').value; saveDraft();
 }
 function quitterSeance(){ show('home'); }
 
+/* --- graphique d'exo pendant la saisie (3 modes commutables) --- */
+let graphOuvert = null, graphMode = 'tonnage';
+function toggleGraph(i){
+  const el = document.getElementById('gp-' + i);
+  if (!el) return;
+  if (graphOuvert === i){ el.style.display = 'none'; graphOuvert = null; return; }
+  document.querySelectorAll('.graphpanel').forEach(x => x.style.display = 'none');
+  graphOuvert = i; el.style.display = 'block';
+  renderGraphSaisie(i);
+}
+function renderGraphSaisie(i){
+  const e = draft.exercices[i];
+  const el = document.getElementById('gp-' + i);
+  const chips = `<div class="chips">${[['tonnage','Tonnage'],['charge','Charge'],['series','Reps/série']]
+    .map(([m, l]) => `<button class="ghost small per ${graphMode === m ? 'on' : ''}"
+      onclick="graphMode='${m}';renderGraphSaisie(${i})">${l}</button>`).join('')}</div>`;
+  const ev = dashboard && dashboard.evolution_exos && dashboard.evolution_exos[canonJs(e.nom)];
+  if (!ev || !ev.points.length){ el.innerHTML = chips + '<p class="muted">Pas encore d\'historique pour cet exercice.</p>'; return; }
+  if (graphMode === 'series'){ el.innerHTML = chips + seriesSvg(ev.points, i); return; }
+  const pts = ev.points
+    .map(pt => ({x: pt.date, y: graphMode === 'charge' ? pt.charge_max : (pt.metrique === 'tonnage' ? pt.valeur : null)}))
+    .filter(pt => pt.x && pt.y != null);
+  el.innerHTML = chips + (pts.length >= 2
+    ? lineSvg(pts, 'kg', 'gp' + i, {step: graphMode === 'charge'})
+    : '<p class="muted">Pas assez de points (min 2).</p>');
+}
+/* reps par serie : une ligne par seance passee (la plus vive = la plus recente) */
+function seriesSvg(points, uid){
+  const sel = points.filter(pt => pt.series && pt.series.length).slice(-5);
+  if (!sel.length) return '<p class="muted">Pas de détail de séries dans l\'historique.</p>';
+  const W = 340, H = 170, P = {l: 30, r: 62, t: 14, b: 22};
+  const maxS = Math.max(...sel.map(pt => pt.series.length));
+  const ys = sel.flatMap(pt => pt.series);
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  if (y0 === y1){ y0 -= 1; y1 += 1; }
+  const X = j => P.l + (W - P.l - P.r) * (maxS === 1 ? .5 : j / (maxS - 1));
+  const Y = v => P.t + (H - P.t - P.b) * (1 - (v - y0) / (y1 - y0));
+  const lignes = sel.map((pt, k) => {
+    const dern = k === sel.length - 1;
+    const op = (0.3 + 0.7 * (k + 1) / sel.length).toFixed(2);
+    const line = pt.series.map((r, j) => `${X(j).toFixed(1)},${Y(r).toFixed(1)}`).join(' ');
+    const lj = pt.series.length - 1;
+    return `<polyline points="${line}" fill="none" stroke="var(--s1)" stroke-opacity="${op}"
+        stroke-width="${dern ? 2.5 : 1.5}"/>
+      ${pt.series.map((r, j) => `<circle cx="${X(j)}" cy="${Y(r)}" r="${dern ? 4 : 2.5}"
+        fill="var(--s1)" fill-opacity="${op}"/>`).join('')}
+      <text x="${(X(lj) + 5).toFixed(1)}" y="${(Y(pt.series[lj]) + 3).toFixed(1)}"
+        ${dern ? 'class="vtxt"' : ''}>${fmtDate(pt.x)}</text>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%">
+    <line x1="${P.l}" x2="${W-P.r}" y1="${H-P.b}" y2="${H-P.b}" stroke="var(--axis)"/>
+    ${[y0, y1].map(v => `<text x="2" y="${(Y(v)+3).toFixed(1)}" class="num">${v}</text>`).join('')}
+    ${lignes}
+    ${Array.from({length: maxS}, (_, j) => `<text x="${X(j)}" y="${H-6}" text-anchor="middle">S${j+1}</text>`).join('')}
+  </svg>
+  <p class="muted" style="margin:2px 0 0">reps par série — utile pour voir si tu charges trop les premières</p>`;
+}
+
+/* --- deplacement d'un exo par appui long sur son en-tete --- */
+function reordonneDraft(ordreIdx){
+  const nv = [];
+  for (const i of ordreIdx){
+    nv.push(draft.exercices[i]);
+    for (let j = i + 1; j < draft.exercices.length && draft.exercices[j].degressif_de; j++)
+      nv.push(draft.exercices[j]);
+  }
+  draft.exercices = nv;
+  saveDraft();
+}
+let dragEl = null, pressTimer = null, pressPos = null;
+document.addEventListener('pointerdown', (e) => {
+  const head = e.target.closest('.exo-head');
+  if (!head || e.target.closest('button, input, select, textarea, .nom')) return;
+  const card = head.closest('.exo');
+  if (!card) return;
+  pressPos = {x: e.clientX, y: e.clientY};
+  pressTimer = setTimeout(() => {
+    dragEl = card;
+    card.classList.add('dragging');
+    if (navigator.vibrate) navigator.vibrate(30);
+  }, 400);
+});
+document.addEventListener('pointermove', (e) => {
+  if (pressTimer && pressPos && Math.abs(e.clientX - pressPos.x) + Math.abs(e.clientY - pressPos.y) > 12){
+    clearTimeout(pressTimer); pressTimer = null;
+  }
+  if (!dragEl) return;
+  e.preventDefault();
+  const cards = [...document.querySelectorAll('#se-exos > .exo')].filter(c => c !== dragEl);
+  let apres = null;
+  for (const c of cards){
+    const r = c.getBoundingClientRect();
+    if (e.clientY > r.top + r.height / 2) apres = c;
+  }
+  if (apres) apres.after(dragEl);
+  else if (cards.length) cards[0].before(dragEl);
+}, {passive: false});
+document.addEventListener('pointerup', () => {
+  if (pressTimer){ clearTimeout(pressTimer); pressTimer = null; }
+  if (!dragEl) return;
+  dragEl.classList.remove('dragging');
+  dragEl = null;
+  const ordre = [...document.querySelectorAll('#se-exos > .exo')].map(c => +c.dataset.idx);
+  reordonneDraft(ordre);
+  renderSaisie();
+});
+document.addEventListener('pointercancel', () => {
+  if (pressTimer){ clearTimeout(pressTimer); pressTimer = null; }
+  if (dragEl){ dragEl.classList.remove('dragging'); dragEl = null; renderSaisie(); }
+});
+
 async function terminerSeance(){
   const sources = draft.exercices.filter(faite);
-  const exos = sources.map((e, i) => ({
-    ordre: i + 1, nom: e.nom.trim(), groupe: e.groupe,
-    charge_kg: e.charge_kg === '' ? null : Number(e.charge_kg),
-    charge_note: (e.charge_note || '').trim() || null,
-    series: e.series.filter(x => x !== '' && x != null).map(Number),
-    series_note: null,
-    note: (e.note || '').trim() || null,
-    ...(e.degressif_de ? {degressif_de: e.degressif_de} : {}),
-  }));
+  const exos = sources.map((e, i) => {
+    const reps = [], chs = [];
+    let custom = false;
+    const chargeExo = e.charge_kg === '' ? null : Number(e.charge_kg);
+    e.series.forEach((v, j) => {
+      if (v === '' || v == null) return;
+      reps.push(Number(v));
+      const c = Array.isArray(e.series_charges) && e.series_charges[j] != null && e.series_charges[j] !== ''
+        ? Number(e.series_charges[j]) : null;
+      chs.push(c);
+      if (c != null && c !== chargeExo) custom = true;
+    });
+    return {
+      ordre: i + 1, nom: e.nom.trim(), groupe: e.groupe,
+      charge_kg: chargeExo,
+      charge_note: (e.charge_note || '').trim() || null,
+      series: reps,
+      ...(custom ? {series_charges: chs} : {}),
+      series_note: null,
+      note: (e.note || '').trim() || null,
+      ...(e.degressif_de ? {degressif_de: e.degressif_de} : {}),
+    };
+  });
   if (!exos.length) { alert('Aucun exercice saisi.'); return; }
   if (!confirm(`Terminer la séance ? ${exos.length} exercice(s) seront enregistrés.`)) return;
   const s = {schema_version: 1, id: `${draft.date}_${draft.type_seance}`,
@@ -812,13 +1071,11 @@ async function terminerSeance(){
   // resume local pour la carte "Derniere seance" (dispo avant le batch)
   lastResume = {id: s.id, date: s.date, nom: s.nom, type_seance: s.type_seance,
     exos: exos.map((x, i) => {
-      const t = (x.charge_kg != null && x.series.length)
-        ? x.charge_kg * x.series.reduce((a, b) => a + b, 0) : null;
+      const cur = tonnageEntree(x.charge_kg, x.series, x.series_charges || null);
       const r = sources[i].rappel || null;
-      const pt = (r && r.charge_kg != null && (r.series || []).length)
-        ? r.charge_kg * r.series.reduce((a, b) => a + b, 0) : null;
+      const prev = r ? tonnageEntree(r.charge_kg, r.series || [], r.series_charges || null) : {t: 0, cm: null};
       return {nom: x.nom, charge_kg: x.charge_kg, series: x.series,
-              tonnage: t, prev_tonnage: pt, prev_charge: r ? r.charge_kg : null};
+              tonnage: cur.t || null, prev_tonnage: prev.t || null, prev_charge: prev.cm};
     })};
   await idb.set('kv', 'derniere_resume', lastResume);
   await enqueue(`seances_log/${s.date.slice(0,4)}/${s.id}.json`, s, 'seance ' + s.id);
@@ -905,10 +1162,9 @@ async function seancesDeSemaine(lundi){
     vues.add(s.id);
     out.push({id: s.id, date: s.date, src: 'local',
       exos: (s.exercices || []).map(e => {
-        const reps = (e.series || []).reduce((x, b) => x + Number(b || 0), 0);
         return {cle: canonJs(e.nom), nom: e.nom, groupe: e.groupe,
           series: (e.series || []).length, statut: null,
-          tonnage: (e.charge_kg != null && reps) ? e.charge_kg * reps : 0};
+          tonnage: tonnageEntree(e.charge_kg, e.series || [], e.series_charges || null).t};
       })});
   }
   return out;
