@@ -157,6 +157,11 @@ body.en-drag, body.en-drag *{-webkit-user-select:none !important; user-select:no
   padding:10px; margin-top:10px}
 .degblock.done > .spread b::after{content:' ✓'; color:var(--good)}
 .graphpanel{margin:8px 0}
+.modal-fond{position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:60;
+  display:flex; align-items:center; justify-content:center; padding:20px}
+.modal-boite{background:var(--surface); border:1px solid var(--ring); border-radius:16px;
+  padding:16px; width:100%; max-width:360px}
+.modal-boite label{display:block; margin-top:10px}
 /* --- semaine --- */
 .wbar{background:var(--plane); border-radius:8px; height:22px; position:relative; overflow:hidden}
 .wbar>div{height:100%; background:var(--s1); border-radius:8px 4px 4px 8px; min-width:2px;
@@ -369,6 +374,20 @@ body.en-drag, body.en-drag *{-webkit-user-select:none !important; user-select:no
   <p class="muted">Données : repo GitHub privé · app : GitHub Pages</p>
 </div>
 
+<div id="fin-fond" class="modal-fond" style="display:none">
+  <div class="modal-boite">
+    <b>Terminer la séance</b>
+    <p class="sub num" id="fin-recap"></p>
+    <label>Durée de la séance <span class="muted">(pré-remplie par le chrono — corrige-la)</span></label>
+    <input id="fin-duree" placeholder="ex. 1h50, ou 110 (minutes)" style="width:100%">
+    <p class="muted" id="fin-erreur" style="color:var(--crit)"></p>
+    <div class="row" style="margin-top:10px; justify-content:flex-end">
+      <button class="ghost" onclick="fermerFin()">Annuler</button>
+      <button onclick="finaliserSeance()">✓ Enregistrer</button>
+    </div>
+  </div>
+</div>
+
 <nav>
   <button data-v="home" class="on"><span class="ico">🏋️</span>Séance</button>
   <button data-v="semaine"><span class="ico">📅</span>Semaine</button>
@@ -390,7 +409,7 @@ window.addEventListener('unhandledrejection', (e) => {
   const s = document.getElementById('home-status');
   if (s) s.textContent = '⚠️ Erreur : ' + (e.reason && e.reason.message || e.reason);
 });
-const APP_VERSION = '2.1.1';
+const APP_VERSION = '2.2.0';
 const APP_BUILD = '31/08/2026';
 const GROUPES = ['Pec','Dos','Epaules','Biceps','Triceps','Quadriceps','Ischios','Fessiers','Mollets','Lombaires','Abdos'];
 const TYPES = [
@@ -510,6 +529,12 @@ async function flushQueue(){
   try {
     const items = await idb.all('queue');
     for (const it of items){
+      if (it.kind === 'alias'){
+        try { await appliqueAlias(it); await idb.del('queue', it.qid);
+              localStorage.setItem('muscu_lastsync', new Date().toISOString()); }
+        catch (e) { flushing = false; updateSyncUI(); return; }   // reseau/conflit : on reessaiera
+        continue;
+      }
       let path = it.path, tries = 0, done = false;
       while (!done && tries < 3){
         try { await ghPutJson(path, it.data, it.message); done = true; }
@@ -538,6 +563,24 @@ async function updateSyncUI(){
   const ls = localStorage.getItem('muscu_lastsync');
   $('#rg-sync').textContent = (n ? n + ' élément(s) en attente. ' : 'File vide. ')
     + (ls ? 'Dernière synchro : ' + new Date(ls).toLocaleString('fr-FR') : '');
+}
+
+/* applique un renommage a config.json (fichier mutable -> GET sha puis PUT) */
+async function appliqueAlias(it){
+  const base = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/config.json`;
+  const r = await ghFetch(`${base}?ref=${cfg.branch || 'main'}`, {headers: ghHeaders(false), cache: 'no-store'});
+  if (!r.ok) throw Object.assign(new Error('GET config ' + r.status), {status: r.status});
+  const j = await r.json();
+  const conf = JSON.parse(decodeURIComponent(escape(atob(String(j.content).replace(/\n/g, '')))));
+  conf.alias_exercices = conf.alias_exercices || {};
+  for (const k in conf.alias_exercices)                     // reecrire les chaines A->B, B->C
+    if (normJs(conf.alias_exercices[k]) === it.ancien) conf.alias_exercices[k] = it.nouveau;
+  conf.alias_exercices[it.ancien] = it.nouveau;
+  conf.alias_exercices[it.ancien + ' (degressif)'] = it.nouveau + ' (degressif)';
+  const r2 = await ghFetch(base, {method: 'PUT', headers: ghHeaders(false),
+    body: JSON.stringify({message: it.message, branch: cfg.branch || 'main', sha: j.sha,
+      content: b64utf8(JSON.stringify(conf, null, 1))})});
+  if (!r2.ok) throw Object.assign(new Error('PUT config ' + r2.status), {status: r2.status});
 }
 
 /* ==================== données distantes ==================== */
@@ -667,7 +710,7 @@ function renderDerniereSeance(){
       <b>${useLocal ? '' : `<span class="dot st-${s.couleur}"></span>`}Dernière séance — ${esc(s.nom)}</b>
       <span class="muted">${relJours(s.date)}</span>
     </div>
-    <div class="sub num" style="margin:2px 0 6px">${fmtDate(s.date)} · ${Math.round(tonnage).toLocaleString('fr-FR')} kg${!useLocal && s.pct_progression != null ? ' · ' + s.pct_progression + '% des exos en progression' : ''}</div>
+    <div class="sub num" style="margin:2px 0 6px">${fmtDate(s.date)} · ${Math.round(tonnage).toLocaleString('fr-FR')} kg${s.duree_min ? ' · ⏱ ' + fmtDuree(s.duree_min) : ''}${!useLocal && s.pct_progression != null ? ' · ' + s.pct_progression + '% des exos en progression' : ''}</div>
     <table class="mini">${rows.join('')}</table>
     ${sousTitre}
   </div>`;
@@ -869,6 +912,7 @@ function exoCard(c){
     ${c.degs.map(degBloc).join('')}
     <div class="row" style="margin-top:8px">
       <button class="ghost small" onclick="addDegressif(${c.idx})">+ dégressif</button>
+      <button class="ghost small" onclick="renommerExo(${c.idx})">✏️ renommer</button>
       <button class="ghost small" style="color:var(--crit)" onclick="retirerExo(${c.idx})">retirer</button>
     </div>
   </div>`;
@@ -1108,7 +1152,83 @@ document.addEventListener('pointercancel', () => {
   if (enCours) renderSaisie();
 });
 
-async function terminerSeance(){
+/* --- renommer un exercice SANS perdre son historique : l'ancien nom devient un alias
+   du nouveau (table alias_exercices de config.json, celle que le batch utilise deja). --- */
+async function renommerExo(i){
+  const e = draft.exercices[i];
+  const ancien = e.nom;
+  const saisie = prompt('Nouveau nom pour « ' + ancien + ' » :\n(l\'historique suivra automatiquement)', ancien);
+  if (saisie == null) return;
+  const nouveau = saisie.trim();
+  if (!nouveau || nouveau === ancien) return;
+  e.nom = nouveau;
+  for (const x of draft.exercices)
+    if (x.degressif_de === ancien){ x.degressif_de = nouveau; x.nom = nouveau + ' (degressif)'; }
+  const na = normJs(ancien), nn = normJs(nouveau);
+  if (na !== nn){
+    // application locale immediate (courbes / semaine coherentes meme hors ligne)
+    if (dashboard){
+      dashboard.alias = dashboard.alias || {};
+      for (const k in dashboard.alias) if (dashboard.alias[k] === na) dashboard.alias[k] = nn;
+      dashboard.alias[na] = nn;
+      dashboard.alias[na + ' (degressif)'] = nn + ' (degressif)';
+      await idb.set('kv', 'dashboard', dashboard);
+    }
+    // alias durable : applique a config.json des que le reseau revient
+    await idb.set('queue', null, {qid: 'alias#' + Date.now(), kind: 'alias',
+      ancien: na, nouveau: nn, message: `renommage exo : ${ancien} -> ${nouveau}`});
+    updateSyncUI(); flushQueue();
+  }
+  saveDraft(); renderSaisie();
+}
+
+/* --- duree de seance --- */
+function parseDuree(txt){
+  txt = String(txt || '').trim().toLowerCase().replace(',', '.').replace(/\s+/g, '');
+  if (!txt) return null;
+  let m = txt.match(/^(\d+)[h:](\d{0,2})$/);          // 1h50, 1:50, 2h
+  if (m) return (+m[1]) * 60 + (+(m[2] || 0));
+  m = txt.match(/^(\d+(?:\.\d+)?)h$/);                // 1.5h
+  if (m) return Math.round(parseFloat(m[1]) * 60);
+  m = txt.match(/^(\d+)(?:min|m|')$/);                  // 110min, 110m
+  if (m) return +m[1];
+  if (/^\d+(\.\d+)?$/.test(txt)){                     // nombre nu : <=6 = heures, sinon minutes
+    const n = parseFloat(txt);
+    return n <= 6 ? Math.round(n * 60) : Math.round(n);
+  }
+  return null;
+}
+function fmtDuree(min){
+  if (min == null) return '';
+  return min < 60 ? `${min} min` : `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}`;
+}
+
+function terminerSeance(){
+  const n = draft.exercices.filter(faite).length;
+  if (!n){ alert('Aucun exercice saisi.'); return; }
+  let ton = 0;
+  for (const e of draft.exercices)
+    ton += tonnageEntree(e.charge_kg === '' || e.charge_kg == null ? null : Number(e.charge_kg),
+                         e.series, e.series_charges || null).t;
+  $('#fin-recap').textContent = `${n} exercice(s) · ${Math.round(ton).toLocaleString('fr-FR')} kg`;
+  const min = Math.round((Date.now() - new Date(draft.date + 'T' + draft.heure_debut)) / 60000);
+  $('#fin-duree').value = (min >= 10 && min <= 480) ? fmtDuree(min) : '';
+  $('#fin-erreur').textContent = '';
+  $('#fin-fond').style.display = 'flex';
+}
+function fermerFin(){ $('#fin-fond').style.display = 'none'; }
+
+async function finaliserSeance(){
+  const brut = $('#fin-duree').value.trim();
+  let duree = null;
+  if (brut){
+    duree = parseDuree(brut);
+    if (duree == null || duree < 10 || duree > 480){
+      $('#fin-erreur').textContent = 'Durée illisible — « 1h50 » ou « 110 » (minutes), ou laisse vide.';
+      return;
+    }
+  }
+  fermerFin();
   const sources = draft.exercices.filter(faite);
   const exos = sources.map((e, i) => {
     const reps = [], chs = [];
@@ -1134,9 +1254,9 @@ async function terminerSeance(){
     };
   });
   if (!exos.length) { alert('Aucun exercice saisi.'); return; }
-  if (!confirm(`Terminer la séance ? ${exos.length} exercice(s) seront enregistrés.`)) return;
   const s = {schema_version: 1, id: `${draft.date}_${draft.type_seance}`,
     type_seance: draft.type_seance, nom: draft.nom, date: draft.date,
+    ...(duree != null ? {duree_min: duree} : {}),
     heure_debut: draft.heure_debut, heure_fin: new Date().toTimeString().slice(0,5),
     lieu: (draft.lieu || '').trim() || null,
     note_seance: (draft.note_seance || '').trim() || null, exercices: exos};
@@ -1144,6 +1264,7 @@ async function terminerSeance(){
   await idb.set('kv', 'local_last', localLast);
   // resume local pour la carte "Derniere seance" (dispo avant le batch)
   lastResume = {id: s.id, date: s.date, nom: s.nom, type_seance: s.type_seance,
+    duree_min: duree,
     exos: exos.map((x, i) => {
       const cur = tonnageEntree(x.charge_kg, x.series, x.series_charges || null);
       const r = sources[i].rappel || null;
@@ -1222,7 +1343,7 @@ async function seancesDeSemaine(lundi){
   for (const s of ((dashboard && dashboard.seances) || [])){
     if (s.date && s.date >= deb && s.date < fin && !vues.has(s.id)){
       vues.add(s.id);
-      out.push({id: s.id, date: s.date, src: 'dash',
+      out.push({id: s.id, date: s.date, src: 'dash', duree_min: s.duree_min || null,
         exos: s.exos.map(e => ({cle: e.cle || canonJs(e.nom), nom: e.nom, groupe: e.groupe,
           series: e.nb_series || 0, statut: e.statut,
           tonnage: e.metrique === 'tonnage' ? (e.valeur || 0) : 0}))});
@@ -1234,7 +1355,7 @@ async function seancesDeSemaine(lundi){
   for (const s of locaux){
     if (!s || !s.date || s.date < deb || s.date >= fin || vues.has(s.id)) continue;
     vues.add(s.id);
-    out.push({id: s.id, date: s.date, src: 'local',
+    out.push({id: s.id, date: s.date, src: 'local', duree_min: s.duree_min || null,
       exos: (s.exercices || []).map(e => {
         return {cle: canonJs(e.nom), nom: e.nom, groupe: e.groupe,
           series: (e.series || []).length, statut: null,
@@ -1248,7 +1369,8 @@ async function calculeSemaine(lundi){
   const pool = poolHebdo(lundi);
   const seances = await seancesDeSemaine(lundi);
   const faits = new Map();
-  let tonnage = 0;
+  let tonnage = 0, tempsMin = 0;
+  for (const s of seances){ if (s.duree_min) tempsMin += s.duree_min; }
   for (const s of seances) for (const e of s.exos){
     tonnage += e.tonnage || 0;
     const f = faits.get(e.cle) || {series: 0, dates: [], statuts: [], nom: e.nom, groupe: e.groupe || '?'};
@@ -1264,7 +1386,7 @@ async function calculeSemaine(lundi){
     if (it.fait > 0) couverts++;
   }
   const extra = [...faits.entries()].filter(([c]) => !pool.has(c)).map(([, f]) => f);
-  return {pool, extra, seances, tonnage, faitTot, cibleTot,
+  return {pool, extra, seances, tonnage, tempsMin, faitTot, cibleTot,
     pct: cibleTot ? Math.round(100 * faitTot / cibleTot) : 0,
     couverts, poolN: pool.size};
 }
@@ -1306,7 +1428,7 @@ async function renderSemaine(){
     <div class="spread">
       <span class="sub num">🏋️ ${Math.round(cur.tonnage).toLocaleString('fr-FR')} kg
         ${dT != null ? `<span class="${dT > 0 ? 'c-vert' : dT < 0 ? 'c-rouge' : 'muted'}">${dT > 0 ? '▲ +' : dT < 0 ? '▼ ' : ''}${dT}% vs S−1</span>` : ''}</span>
-      <span class="sub num">${cur.couverts}/${cur.poolN} exos · ${cur.seances.length} séance(s)</span>
+      <span class="sub num">${cur.couverts}/${cur.poolN} exos · ${cur.seances.length} séance(s)${cur.tempsMin ? ' · ⏱ ' + fmtDuree(cur.tempsMin) : ''}</span>
     </div>`;
   const parGroupe = new Map();
   for (const it of cur.pool.values()){
@@ -1492,9 +1614,14 @@ function mondayOfIsoWeek(key){
   base.setDate(base.getDate() + (w - 1) * 7);
   return base;
 }
+let volcMode = 'tonnage';
 function renderVolumeCourbe(){
   const d = dashboard; const box = $('#st-volcourbe'); if (!d || !box) return;
-  $('#st-volc-per').innerHTML = chipsPeriode('vol');
+  $('#st-volc-per').innerHTML =
+    `<div class="chips">${[['tonnage','Tonnage'],['temps','Temps']].map(([m, l]) =>
+      `<button class="ghost small per ${m === volcMode ? 'on' : ''}" onclick="volcMode='${m}';renderVolumeCourbe()">${l}</button>`).join('')}</div>`
+    + chipsPeriode('vol');
+  if (volcMode === 'temps'){ renderTempsCourbe(); return; }
   const keys = Object.keys(d.volume_hebdo || {}).sort();
   if (!keys.length){ box.innerHTML = '<p class="muted">Aucune séance loguée.</p>'; return; }
   const info = {};
@@ -1517,6 +1644,35 @@ function renderVolumeCourbe(){
   box.innerHTML = fp.length >= 2
     ? lineSvg(fp, 'kg', 'volc', {info: pt => `<b>sem. du ${fmtDate(pt.x)}</b> · ${pt.y.toLocaleString('fr-FR')} kg · ${pt.s} séries`})
     : '<p class="muted">Pas assez de semaines dans la période.</p>';
+}
+/* temps d'entrainement hebdo (minutes -> heures) + moyennes */
+function renderTempsCourbe(){
+  const d = dashboard; const box = $('#st-volcourbe');
+  const th = d.temps_hebdo || {};
+  const keys = Object.keys(th).sort();
+  if (!keys.length){ box.innerHTML = '<p class="muted">Aucune durée enregistrée — renseigne-la en terminant tes séances.</p>'; return; }
+  const info = {};
+  for (const k2 of keys) info[isoJour(mondayOfIsoWeek(k2))] = th[k2];
+  const dates = Object.keys(info).sort();
+  let cur = new Date(dates[0] + 'T00:00');
+  const fin = addJours(lundiDe(new Date()), -7);
+  const pts = [];
+  while (cur <= fin){
+    const key = isoJour(cur);
+    pts.push({x: key, y: Math.round((info[key] || 0) / 6) / 10});   // heures, 1 decimale
+    cur = addJours(cur, 7);
+  }
+  const fp = filtrePeriode(pts, 'vol');
+  if (fp.length < 2){ box.innerHTML = '<p class="muted">Pas assez de semaines dans la période.</p>'; return; }
+  // moyennes sur la periode : par semaine active et par seance
+  const actives = fp.filter(pt => pt.y > 0);
+  const moySem = actives.length ? actives.reduce((a, pt) => a + pt.y, 0) / actives.length : 0;
+  const deb = fp[0].x;
+  const ss = (d.seances || []).filter(s => s.duree_min && s.date >= deb);
+  const moySeance = ss.length ? ss.reduce((a, s) => a + s.duree_min, 0) / ss.length : 0;
+  box.innerHTML = lineSvg(fp, 'h', 'volc',
+      {info: pt => `<b>sem. du ${fmtDate(pt.x)}</b> · ${pt.y.toLocaleString('fr-FR')} h`})
+    + `<p class="sub num">moyenne : <b>${moySem.toFixed(1)} h</b> / semaine active${moySeance ? ` · <b>${fmtDuree(Math.round(moySeance))}</b> / séance` : ''}</p>`;
 }
 
 /* --- graphique ligne SVG generique, interactif (toucher/glisser = inspecter) --- */
@@ -1606,7 +1762,7 @@ function renderSeancesList(d){
           <span class="muted">${fmtDate(s.date)}</span></span>
         <span class="statut-lbl c-${s.couleur}">${ST_ICO[s.couleur]} ${s.pct_progression != null ? s.pct_progression + '%' : ST_LBL[s.couleur]}</span>
       </div>
-      <div class="sub num">${Math.round(s.tonnage).toLocaleString('fr-FR')} kg${s.tonnage_partiel ? ' (+ exos non chiffrés)' : ''}
+      <div class="sub num">${Math.round(s.tonnage).toLocaleString('fr-FR')} kg${s.tonnage_partiel ? ' (+ exos non chiffrés)' : ''}${s.duree_min ? ' · ⏱ ' + fmtDuree(s.duree_min) : ''}
         · ${s.nb_exos_progression}/${s.nb_exos_comparables} exos en progression · 🔥 ${s.streak_apres}</div>
       <details><summary>détail exercices</summary><table>
         ${s.exos.map(e => `<tr>
