@@ -162,6 +162,18 @@ body.en-drag, body.en-drag *{-webkit-user-select:none !important; user-select:no
 .modal-boite{background:var(--surface); border:1px solid var(--ring); border-radius:16px;
   padding:16px; width:100%; max-width:360px}
 .modal-boite label{display:block; margin-top:10px}
+/* --- v2.3 : unilateral + tableau historique --- */
+.cotelbl{width:18px; font-weight:700; color:var(--ink2); align-self:center; flex:none}
+.htab{border-collapse:separate; border-spacing:3px 5px; font-size:.82rem}
+.htab th{color:var(--muted); font-weight:500; text-align:left; font-size:.68rem;
+  text-transform:uppercase; padding:0 4px}
+.htab td{vertical-align:top; padding:0 2px}
+.hcell{display:inline-block; padding:3px 7px; border-radius:8px; white-space:nowrap;
+  border:1.5px solid var(--axis)}
+.h-vert{border-color:var(--good)} .h-rouge{border-color:var(--crit)}
+.h-jaune{border-color:var(--warn)} .h-bleu{border-color:var(--s1)}
+.hdate{white-space:nowrap} .hdate small{display:block; color:var(--muted); font-weight:400}
+.hnote{color:var(--ink2); font-size:.74rem; max-width:120px}
 /* --- semaine --- */
 .wbar{background:var(--plane); border-radius:8px; height:22px; position:relative; overflow:hidden}
 .wbar>div{height:100%; background:var(--s1); border-radius:8px 4px 4px 8px; min-width:2px;
@@ -223,10 +235,13 @@ body.en-drag, body.en-drag *{-webkit-user-select:none !important; user-select:no
     <h1 id="se-titre"></h1>
     <button class="ghost small" onclick="quitterSeance()">Fermer</button>
   </div>
+  <div id="se-edition"></div>
   <div class="row" style="margin-bottom:10px">
     <span class="muted num" id="se-chrono"></span>
     <span class="sub num" id="se-tonnage" style="font-weight:600"></span>
-    <input id="se-lieu" placeholder="Lieu" style="flex:1" onchange="draftMeta()">
+    <input type="date" id="se-date" style="width:148px" onchange="majDateSeance(this.value)">
+    <input id="se-lieu" placeholder="Lieu / salle" list="lieux-connus" style="flex:1; min-width:110px" onchange="draftMeta()">
+    <datalist id="lieux-connus"></datalist>
   </div>
   <div id="se-exos"></div>
   <div class="card">
@@ -292,8 +307,9 @@ body.en-drag, body.en-drag *{-webkit-user-select:none !important; user-select:no
   <div id="st-volc-per"></div>
   <div class="card" id="st-volcourbe"></div>
 
-  <h2>Évolution par exercice</h2>
-  <select id="st-exo-sel" style="width:100%" onchange="renderEvolution()"></select>
+  <h2>Exercices</h2>
+  <select id="st-exo-sel" style="width:100%" onchange="renderEvolution();renderExoHisto()"></select>
+  <div class="card" id="st-exo-histo" style="margin-top:6px"></div>
   <div id="st-evo-modes" style="margin-top:6px"></div>
   <div class="card" id="st-evo"></div>
 
@@ -409,7 +425,7 @@ window.addEventListener('unhandledrejection', (e) => {
   const s = document.getElementById('home-status');
   if (s) s.textContent = '⚠️ Erreur : ' + (e.reason && e.reason.message || e.reason);
 });
-const APP_VERSION = '2.2.0';
+const APP_VERSION = '2.3.0';
 const APP_BUILD = '31/08/2026';
 const GROUPES = ['Pec','Dos','Epaules','Biceps','Triceps','Quadriceps','Ischios','Fessiers','Mollets','Lombaires','Abdos'];
 const TYPES = [
@@ -529,9 +545,12 @@ async function flushQueue(){
   try {
     const items = await idb.all('queue');
     for (const it of items){
-      if (it.kind === 'alias'){
-        try { await appliqueAlias(it); await idb.del('queue', it.qid);
-              localStorage.setItem('muscu_lastsync', new Date().toISOString()); }
+      if (it.kind === 'alias' || it.kind === 'maj'){
+        try {
+          if (it.kind === 'alias') await appliqueAlias(it); else await appliqueMaj(it);
+          await idb.del('queue', it.qid);
+          localStorage.setItem('muscu_lastsync', new Date().toISOString());
+        }
         catch (e) { flushing = false; updateSyncUI(); return; }   // reseau/conflit : on reessaiera
         continue;
       }
@@ -555,8 +574,11 @@ async function enqueue(path, data, message){
   updateSyncUI();
   flushQueue();
 }
+let queueSeances = [];   // seances en file, en cache pour l'historique par exo (lecture sync)
 async function updateSyncUI(){
-  const n = (await idb.all('queue')).length;
+  const items = await idb.all('queue');
+  queueSeances = items.filter(x => !x.kind && x.data && x.data.exercices).map(x => x.data);
+  const n = items.length;
   const b = $('#home-pending');
   b.style.display = n ? '' : 'none';
   b.textContent = n + ' à synchroniser';
@@ -581,6 +603,18 @@ async function appliqueAlias(it){
     body: JSON.stringify({message: it.message, branch: cfg.branch || 'main', sha: j.sha,
       content: b64utf8(JSON.stringify(conf, null, 1))})});
   if (!r2.ok) throw Object.assign(new Error('PUT config ' + r2.status), {status: r2.status});
+}
+
+/* reecrit un fichier de seance existant (edition de l'historique) : GET sha puis PUT */
+async function appliqueMaj(it){
+  const base = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/${it.path}`;
+  const r = await ghFetch(`${base}?ref=${cfg.branch || 'main'}`, {headers: ghHeaders(false), cache: 'no-store'});
+  if (!r.ok) throw Object.assign(new Error('GET ' + it.path + ' ' + r.status), {status: r.status});
+  const j = await r.json();
+  const r2 = await ghFetch(base, {method: 'PUT', headers: ghHeaders(false),
+    body: JSON.stringify({message: it.message, branch: cfg.branch || 'main', sha: j.sha,
+      content: b64utf8(JSON.stringify(it.data, null, 1))})});
+  if (!r2.ok) throw Object.assign(new Error('PUT ' + it.path + ' ' + r2.status), {status: r2.status});
 }
 
 /* ==================== données distantes ==================== */
@@ -735,6 +769,16 @@ function tonnageEntree(charge, series, customs){
   return {t, cm};
 }
 
+/* tonnage + charge max d'un exo COMPLET (les deux cotes si unilateral) */
+function tonnageExo(e){
+  if (!e) return {t: 0, cm: null};
+  const ch = e.charge_kg === '' || e.charge_kg == null ? null : Number(e.charge_kg);
+  const a = tonnageEntree(ch, e.series || [], e.series_charges || null);
+  if (!e.series_g || !e.series_g.length) return a;
+  const b = tonnageEntree(ch, e.series_g, e.series_charges_g || null);
+  return {t: a.t + b.t, cm: a.cm == null ? b.cm : (b.cm == null ? a.cm : Math.max(a.cm, b.cm))};
+}
+
 async function demarrerSeance(type){
   if (draft && draft.type_seance !== type &&
       !confirm('Une séance "' + draft.nom + '" est en cours. La remplacer ?')) return;
@@ -748,7 +792,9 @@ async function demarrerSeance(type){
     exercices: (model ? model.exercices : []).map(e => nouvelExo(
       e.nom, e.groupe, {charge_kg: e.charge_kg, charge_note: e.charge_note || null,
         series: e.series || [], series_note: e.series_note || null,
-        series_charges: e.series_charges || null, note: e.note || null},
+        series_charges: e.series_charges || null,
+        series_g: e.series_g || null, series_charges_g: e.series_charges_g || null,
+        note: e.note || null},
       e.degressif_de || (/\(degressif\)/i.test(e.nom) ? e.nom.replace(/\s*\(degressif\)\s*/i, '').trim() : null))),
   };
   await saveDraft();
@@ -767,41 +813,62 @@ function cartesSaisie(){
   return cards;
 }
 
+function majDateSeance(v){
+  if (!draft || draft.edition || !v) return;
+  if (v > today()) v = today();
+  draft.date = v; saveDraft(); renderSaisie();
+}
 function renderSaisie(){
   if (!draft) { show('home'); return; }
   graphOuvert = null;
-  $('#se-titre').textContent = draft.nom + ' — ' + fmtDate(draft.date);
+  $('#se-titre').textContent = (draft.edition ? '✏️ ' : '') + draft.nom + ' — ' + fmtDate(draft.date);
+  $('#se-edition').innerHTML = draft.edition
+    ? `<div class="banner" style="margin-bottom:8px"><span>✏️ Modification de la séance du ${fmtDate(draft.date)} — l'original sera remplacé</span></div>` : '';
+  const sd = $('#se-date');
+  sd.value = draft.date; sd.max = today(); sd.disabled = !!draft.edition;
   $('#se-lieu').value = draft.lieu || '';
+  const lieux = new Set();
+  for (const s of ((dashboard && dashboard.seances) || [])) if (s.lieu) lieux.add(s.lieu);
+  for (const s of Object.values(localLast || {})) if (s && s.lieu) lieux.add(s.lieu);
+  $('#lieux-connus').innerHTML = [...lieux].map(l => `<option value="${esc(l)}">`).join('');
   $('#se-note').value = draft.note_seance || '';
   $('#se-new-grp').innerHTML = GROUPES.map(g => `<option>${g}</option>`).join('');
   clearInterval(chronoTimer);
-  const t0 = new Date(draft.date + 'T' + draft.heure_debut);
-  const tick = () => { const m = Math.max(0, Math.round((Date.now() - t0) / 60000));
-    $('#se-chrono').textContent = `⏱ ${Math.floor(m/60)}h${String(m%60).padStart(2,'0')}`; };
-  tick(); chronoTimer = setInterval(tick, 30000);
+  if (draft.edition){
+    $('#se-chrono').textContent = '';
+  } else {
+    const t0 = new Date(draft.date + 'T' + draft.heure_debut);
+    const tick = () => { const m = Math.max(0, Math.round((Date.now() - t0) / 60000));
+      $('#se-chrono').textContent = `⏱ ${Math.floor(m/60)}h${String(m%60).padStart(2,'0')}`; };
+    tick(); chronoTimer = setInterval(tick, 30000);
+  }
   $('#se-exos').innerHTML = cartesSaisie().map(c => exoCard(c)).join('');
   draft.exercices.forEach((_, i) => majExoVisu(i));
   majTonnageLive();
 }
 
+function fmtCote(series, charges, chargeExo){
+  return (series || []).map((rep, j) => {
+    const c = charges && charges[j] != null ? charges[j] : null;
+    return (c != null && c !== chargeExo ? kg(c) + '×' : '') + rep;
+  }).join(' · ');
+}
 function rappelHtml(r, i){
   if (!r) return '<div class="rappel">Nouvel exercice — pas d\'historique</div>';
-  const perSerie = Array.isArray(r.series_charges) && r.series_charges.some(c => c != null);
-  const serie = (r.series && r.series.length)
-    ? (perSerie
-        ? r.series.map((rep, j) => {
-            const c = r.series_charges[j] != null ? r.series_charges[j] : r.charge_kg;
-            return (c != null ? kg(c) + '×' : '') + rep;
-          }).join(' · ')
-        : r.series.join(' · '))
-    : (r.series_note || '—');
+  let serie;
+  if (r.series_g && r.series_g.length)
+    serie = 'D ' + fmtCote(r.series, r.series_charges, r.charge_kg)
+      + '  |  G ' + fmtCote(r.series_g, r.series_charges_g, r.charge_kg);
+  else if (r.series && r.series.length)
+    serie = fmtCote(r.series, r.series_charges, r.charge_kg);
+  else serie = r.series_note || '—';
   const charge = r.charge_kg != null ? `<b>${kg(r.charge_kg)} kg</b>` : (r.charge_note ? `<b>${esc(r.charge_note)}</b>` : '<b>—</b>');
   const btn = (r.charge_kg != null || (r.series || []).length)
     ? `<button class="ghost small repr" onclick="reprendreExo(${i})">↺ reprendre</button>` : '';
-  const prev = tonnageEntree(r.charge_kg, r.series || [], r.series_charges || null);
+  const prev = tonnageExo(r);
   const cible = prev.t
     ? `<br>🎯 À battre : <b>${Math.round(prev.t).toLocaleString('fr-FR')} kg de volume</b>` +
-      (r.charge_kg != null ? ` <span class="muted">(${kg(r.charge_kg)} kg × ${(r.series||[]).reduce((a,b)=>a+b,0)} reps — +1 rep ou +charge)</span>` : '')
+      (r.charge_kg != null ? ` <span class="muted">(${kg(r.charge_kg)} kg × ${((r.series||[]).reduce((a,b)=>a+b,0) + (r.series_g||[]).reduce((a,b)=>a+b,0))} reps — +1 rep ou +charge)</span>` : '')
     : '';
   return `<div class="rappel">${btn}Dernière fois : ${charge}${r.charge_kg != null && r.charge_note ? ' <i>(' + esc(r.charge_note) + ')</i>' : ''}
     — ${esc(serie)}${r.note ? '<br>📝 ' + esc(r.note) : ''}${cible}</div>`;
@@ -814,23 +881,28 @@ function reprendreExo(i){
   if ((r.series || []).length) e.series = [...r.series];
   if (Array.isArray(r.series_charges) && r.series_charges.some(c => c != null))
     e.series_charges = [...r.series_charges];
+  if (r.series_g && r.series_g.length){
+    e.series_g = [...r.series_g];
+    if (Array.isArray(r.series_charges_g) && r.series_charges_g.some(c => c != null))
+      e.series_charges_g = [...r.series_charges_g];
+  }
   if (r.charge_note && !e.charge_note) e.charge_note = r.charge_note;
   saveDraft(); renderSaisie();
 }
 
 /* --- validation live : ai-je battu la derniere fois ? --- */
 function statutSaisie(e){
-  const cur = tonnageEntree(e.charge_kg === '' || e.charge_kg == null ? null : Number(e.charge_kg),
-                            e.series, e.series_charges || null);
+  const cur = tonnageExo(e);
   if (!cur.t && cur.cm == null) return null;                    // rien de chiffrable saisi
   const r = e.rappel;
   if (!r) return {cls: 'c-bleu', txt: '● nouveau'};
-  const prev = tonnageEntree(r.charge_kg, r.series || [], r.series_charges || null);
+  const prev = tonnageExo(r);
   if (!prev.t) return {cls: 'c-bleu', txt: '● nouveau'};
   if (cur.t > prev.t || (prev.cm != null && cur.cm != null && cur.cm > prev.cm))
     return {cls: 'c-vert', txt: '✓ validé'};
-  const nbFait = e.series.filter(v => Number(v) > 0).length;
-  const fini = nbFait >= (r.series || []).length;
+  const nbFait = e.series.filter(v => Number(v) > 0).length
+    + (e.series_g || []).filter(v => Number(v) > 0).length;
+  const fini = nbFait >= ((r.series || []).length + (r.series_g || []).length);
   if (fini && cur.t === prev.t && cur.cm === prev.cm) return {cls: 'c-jaune', txt: '＝ égalé'};
   if (fini) return {cls: 'c-rouge', txt: `✗ −${Math.round(prev.t - cur.t).toLocaleString('fr-FR')} kg`};
   return {cls: 'muted', txt: `reste ${Math.max(0, Math.round(prev.t - cur.t)).toLocaleString('fr-FR')} kg`};
@@ -846,32 +918,39 @@ function majExoVisu(i){
 }
 function majTonnageLive(){
   let t = 0;
-  for (const e of (draft ? draft.exercices : [])){
-    t += tonnageEntree(e.charge_kg === '' || e.charge_kg == null ? null : Number(e.charge_kg),
-                       e.series, e.series_charges || null).t;
-  }
+  for (const e of (draft ? draft.exercices : [])) t += tonnageExo(e).t;
   const el = $('#se-tonnage');
   if (el) el.textContent = t ? '🏋️ ' + Math.round(t).toLocaleString('fr-FR') + ' kg' : '';
 }
 
 /* --- rendu d'une carte : exo parent + degressifs imbriques --- */
-function serieChips(e, i){
+function chipsRangee(e, i, g){
+  const series = g ? e.series_g : e.series;
+  const customs = g ? e.series_charges_g : e.series_charges;
   const per = Array.isArray(e.series_charges);
-  const chips = e.series.map((v, j) => per
+  const gArg = g ? ',1' : '';
+  return series.map((v, j) => per
     ? `<span class="schip">
-         <input type="number" inputmode="numeric" placeholder="reps" value="${v}" onchange="setSerie(${i},${j},this.value)">
+         <input type="number" inputmode="numeric" placeholder="reps" value="${v}" onchange="setSerie(${i},${j},this.value${gArg})">
          <input type="number" inputmode="decimal" step="0.5" class="skg num"
            placeholder="${e.charge_kg !== '' && e.charge_kg != null ? esc(String(e.charge_kg)) : 'kg'}"
-           value="${e.series_charges[j] != null ? e.series_charges[j] : ''}"
-           onchange="setSerieCharge(${i},${j},this.value)">
+           value="${customs && customs[j] != null ? customs[j] : ''}"
+           onchange="setSerieCharge(${i},${j},this.value${gArg})">
        </span>`
     : `<input type="number" inputmode="numeric" placeholder="reps" value="${v}"
-         onchange="setSerie(${i},${j},this.value)">`).join('');
-  return `<div class="series-row">${chips}
-    <button class="ghost small" onclick="addSerie(${i})">+ série</button>
-    <button class="ghost small ${per ? 'on' : ''}" onclick="togglePerSerie(${i})"
+         onchange="setSerie(${i},${j},this.value${gArg})">`).join('')
+    + `<button class="ghost small" onclick="addSerie(${i}${gArg})">+ série</button>`;
+}
+function serieChips(e, i){
+  const per = Array.isArray(e.series_charges);
+  const uni = Array.isArray(e.series_g);
+  const boutons = `<button class="ghost small ${per ? 'on' : ''}" onclick="togglePerSerie(${i})"
       title="charge différente par série">⚖️${per ? ' ✓' : ''}</button>
-  </div>`;
+    <button class="ghost small ${uni ? 'on' : ''}" onclick="toggleUnilateral(${i})"
+      title="unilatéral : côtés droite et gauche séparés">D|G${uni ? ' ✓' : ''}</button>`;
+  if (!uni) return `<div class="series-row">${chipsRangee(e, i, 0)}${boutons}</div>`;
+  return `<div class="series-row"><span class="cotelbl">D</span>${chipsRangee(e, i, 0)}</div>
+    <div class="series-row"><span class="cotelbl">G</span>${chipsRangee(e, i, 1)}${boutons}</div>`;
 }
 function inputsBloc(e, i){
   return `<div class="row">
@@ -896,6 +975,23 @@ function degBloc(j){
     ${inputsBloc(e, j)}
   </div>`;
 }
+/* si la salle du jour est connue : derniere perf DANS CETTE salle (machines differentes) */
+function iciLigne(i){
+  const e = draft.exercices[i];
+  const lieu = (draft.lieu || '').trim();
+  if (!lieu) return '';
+  const nl = normJs(lieu);
+  const occs = occurrencesExo(canonJs(e.nom)).filter(o => o.lieu && normJs(o.lieu) === nl
+    && (!draft.edition || o.seance !== draft.edition.id));
+  if (!occs.length) return '';
+  const o = occs[occs.length - 1];
+  const st = o.series_g
+    ? 'D ' + o.series.join('·') + ' | G ' + o.series_g.join('·')
+    : (o.series || []).join('·');
+  return `<div class="rappel" style="border-left:2px solid var(--s1)">📍 Ici (${esc(o.lieu)}) :
+    <b>${o.charge != null ? kg(o.charge) + ' kg' : '—'}</b> — ${st}
+    <span class="muted">· ${fmtDate(o.date)}</span></div>`;
+}
 function exoCard(c){
   const e = draft.exercices[c.idx];
   return `<div class="exo" id="exo-${c.idx}" data-idx="${c.idx}">
@@ -908,6 +1004,7 @@ function exoCard(c){
     </div>
     <div class="graphpanel" id="gp-${c.idx}" style="display:none"></div>
     ${rappelHtml(e.rappel, c.idx)}
+    ${iciLigne(c.idx)}
     ${inputsBloc(e, c.idx)}
     ${c.degs.map(degBloc).join('')}
     <div class="row" style="margin-top:8px">
@@ -923,22 +1020,46 @@ function setExo(i, champ, v){
   if (champ === 'charge_kg' && Array.isArray(draft.exercices[i].series_charges)){ renderSaisie(); return; }
   majExoVisu(i); majTonnageLive();
 }
-function setSerie(i, j, v){ draft.exercices[i].series[j] = v === '' ? '' : Number(v); saveDraft(); majExoVisu(i); majTonnageLive(); }
-function setSerieCharge(i, j, v){
+function setSerie(i, j, v, g){
   const e = draft.exercices[i];
-  if (!Array.isArray(e.series_charges)) e.series_charges = [];
-  e.series_charges[j] = v === '' ? null : Number(v);
+  (g ? e.series_g : e.series)[j] = v === '' ? '' : Number(v);
+  saveDraft(); majExoVisu(i); majTonnageLive();
+}
+function setSerieCharge(i, j, v, g){
+  const e = draft.exercices[i];
+  const champ = g ? 'series_charges_g' : 'series_charges';
+  if (!Array.isArray(e[champ])) e[champ] = [];
+  e[champ][j] = v === '' ? null : Number(v);
   saveDraft(); majExoVisu(i); majTonnageLive();
 }
 function togglePerSerie(i){
   const e = draft.exercices[i];
   if (Array.isArray(e.series_charges)){
-    if (e.series_charges.some(v => v != null) && !confirm('Retirer les charges par série ?')) return;
-    delete e.series_charges;
-  } else e.series_charges = [];
+    if ((e.series_charges.some(v => v != null) || (e.series_charges_g || []).some(v => v != null))
+        && !confirm('Retirer les charges par série ?')) return;
+    delete e.series_charges; delete e.series_charges_g;
+  } else {
+    e.series_charges = [];
+    if (Array.isArray(e.series_g)) e.series_charges_g = [];
+  }
   saveDraft(); renderSaisie();
 }
-function addSerie(i){ draft.exercices[i].series.push(''); saveDraft(); renderSaisie(); }
+function toggleUnilateral(i){
+  const e = draft.exercices[i];
+  if (Array.isArray(e.series_g)){
+    if (e.series_g.some(v => v !== '' && v != null) && !confirm('Retirer le côté gauche ?')) return;
+    delete e.series_g; delete e.series_charges_g;
+  } else {
+    e.series_g = e.series.map(() => '');           // meme nombre de cases que le cote D
+    if (Array.isArray(e.series_charges)) e.series_charges_g = [];
+  }
+  saveDraft(); renderSaisie();
+}
+function addSerie(i, g){
+  const e = draft.exercices[i];
+  (g ? e.series_g : e.series).push('');
+  saveDraft(); renderSaisie();
+}
 function addDegressif(i){
   const p = draft.exercices[i];
   const nomDeg = p.nom + ' (degressif)';
@@ -948,7 +1069,9 @@ function addDegressif(i){
     const prev = (model.exercices || []).find(x => x.nom.toLowerCase() === nomDeg.toLowerCase());
     if (prev) r = {charge_kg: prev.charge_kg, charge_note: prev.charge_note || null,
       series: prev.series || [], series_note: prev.series_note || null,
-      series_charges: prev.series_charges || null, note: prev.note || null};
+      series_charges: prev.series_charges || null,
+      series_g: prev.series_g || null, series_charges_g: prev.series_charges_g || null,
+      note: prev.note || null};
   }
   draft.exercices.splice(i + 1, 0, nouvelExo(nomDeg, p.groupe, r, p.nom));
   saveDraft(); renderSaisie();
@@ -975,8 +1098,100 @@ function draftMeta(){
 }
 function quitterSeance(){ show('home'); }
 
-/* --- graphique d'exo pendant la saisie (3 modes commutables) --- */
-let graphOuvert = null, graphMode = 'tonnage';
+/* ==================== historique par exo (autonome : batch + seances locales) ==================== */
+function occurrencesExo(cle){
+  const out = [], ids = new Set();
+  const ev = dashboard && dashboard.evolution_exos && dashboard.evolution_exos[cle];
+  for (const pt of ((ev && ev.points) || [])){
+    if (!pt.date) continue;
+    ids.add(pt.seance);
+    out.push({date: pt.date, seance: pt.seance, lieu: pt.lieu || null, note: pt.note || null,
+      charge: pt.charge_max, series: pt.series || [], charges: pt.series_charges || null,
+      series_g: pt.series_g || null, charges_g: pt.series_charges_g || null,
+      tonnage: pt.metrique === 'tonnage' ? pt.valeur : null});
+  }
+  const vus = new Set();
+  for (const s of [...Object.values(localLast || {}), ...queueSeances]){
+    if (!s || !s.id || ids.has(s.id) || vus.has(s.id)) continue;
+    vus.add(s.id);
+    for (const e of (s.exercices || [])){
+      if (canonJs(e.nom) !== cle) continue;
+      const m = tonnageExo(e);
+      out.push({date: s.date, seance: s.id, lieu: s.lieu || null, note: e.note || null,
+        charge: e.charge_kg !== '' && e.charge_kg != null ? Number(e.charge_kg) : null,
+        series: (e.series || []).map(Number), charges: e.series_charges || null,
+        series_g: e.series_g ? e.series_g.map(Number) : null, charges_g: e.series_charges_g || null,
+        tonnage: m.t || null});
+    }
+  }
+  out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return out;
+}
+function valSerieOcc(o, j){
+  let v = null;
+  if (o.series && o.series[j] != null){
+    const c = (o.charges && o.charges[j] != null) ? o.charges[j] : o.charge;
+    if (c != null) v = c * o.series[j];
+  }
+  if (o.series_g && o.series_g[j] != null){
+    const c = (o.charges_g && o.charges_g[j] != null) ? o.charges_g[j] : o.charge;
+    if (c != null) v = (v || 0) + c * o.series_g[j];
+  }
+  return v;
+}
+function txtSerieOcc(o, j){
+  const d = o.series && o.series[j] != null ? o.series[j] : null;
+  const g = o.series_g && o.series_g[j] != null ? o.series_g[j] : null;
+  if (d == null && g == null) return '';
+  const cd = o.charges && o.charges[j] != null && o.charges[j] !== o.charge ? kg(o.charges[j]) + '×' : '';
+  const cg = o.charges_g && o.charges_g[j] != null && o.charges_g[j] !== o.charge ? kg(o.charges_g[j]) + '×' : '';
+  return g != null ? `${cd}${d != null ? d : '–'}|${cg}${g}` : `${cd}${d}`;
+}
+let histoDeplie = {};
+function basculeHisto(btn){
+  const c = btn.dataset.cle;
+  histoDeplie[c] = !histoDeplie[c];
+  if (btn.dataset.ctx === 'stats') renderExoHisto();
+  else renderGraphSaisie(+btn.dataset.i);
+}
+/* tableau : 1 ligne par occurrence (recentes en haut), cellules encadrees
+   vert (bat la meme serie de la fois precedente) / rouge (en-dessous) / jaune (egal) / bleu (pas de comparable) */
+function tableauHistoriqueExo(cle, opts = {}){
+  const occs = occurrencesExo(cle);
+  if (!occs.length) return '<p class="muted">Pas encore d\'historique pour cet exercice.</p>';
+  const max = histoDeplie[cle] ? 999 : (opts.max || 4);
+  const vis = occs.slice(-max);
+  const nbS = Math.max(1, ...vis.map(o => Math.max((o.series || []).length, (o.series_g || []).length)));
+  const lignes = [...vis].reverse().map(o => {
+    const idx = occs.indexOf(o);
+    const prev = idx > 0 ? occs[idx - 1] : null;
+    const cells = Array.from({length: nbS}, (_, j) => {
+      const txt = txtSerieOcc(o, j);
+      if (!txt) return '<td></td>';
+      let cls = 'h-bleu';
+      if (prev){
+        const v = valSerieOcc(o, j), pv = valSerieOcc(prev, j);
+        if (v != null && pv != null) cls = v > pv ? 'h-vert' : v < pv ? 'h-rouge' : 'h-jaune';
+      }
+      return `<td><span class="hcell ${cls} num">${txt}</span></td>`;
+    }).join('');
+    return `<tr>
+      <td class="hdate"><b>${fmtDate(o.date)}</b>${o.lieu ? `<small>📍 ${esc(o.lieu)}</small>` : ''}${o.series_g ? '<small>unilatéral D|G</small>' : ''}</td>
+      <td class="num">${o.charge != null ? kg(o.charge) : '—'}</td>
+      ${cells}
+      <td class="hnote">${o.note ? '📝 ' + esc(o.note) : ''}</td>
+    </tr>`;
+  }).join('');
+  const plus = (occs.length > (opts.max || 4))
+    ? `<button class="ghost small" data-cle="${esc(cle)}" data-ctx="${opts.ctx || 'stats'}" data-i="${opts.i != null ? opts.i : ''}"
+        onclick="basculeHisto(this)">${histoDeplie[cle] ? 'voir moins' : `voir tout (${occs.length})`}</button>` : '';
+  return `<div style="overflow-x:auto"><table class="htab">
+    <tr><th>séance</th><th>kg</th>${Array.from({length: nbS}, (_, j) => `<th>S${j + 1}</th>`).join('')}<th>note</th></tr>
+    ${lignes}</table></div>${plus}`;
+}
+
+/* --- graphique d'exo pendant la saisie (4 modes commutables, Historique par defaut) --- */
+let graphOuvert = null, graphMode = 'histo';
 function toggleGraph(i){
   const el = document.getElementById('gp-' + i);
   if (!el) return;
@@ -985,13 +1200,48 @@ function toggleGraph(i){
   graphOuvert = i; el.style.display = 'block';
   renderGraphSaisie(i);
 }
+async function assimilerExo(i, cibleCle){
+  if (!cibleCle){ return; }
+  const e = draft.exercices[i];
+  const cle = canonJs(e.nom);
+  if (cle === cibleCle){ renderGraphSaisie(i); return; }
+  const cibleLabel = (dashboard.evolution_exos[cibleCle] || {}).label || cibleCle;
+  if (!confirm(`Fusionner l'historique de « ${e.nom} » avec « ${cibleLabel} » ?\n(même exercice sur une machine différente)`)){
+    renderGraphSaisie(i); return;
+  }
+  dashboard.alias = dashboard.alias || {};
+  for (const k in dashboard.alias) if (dashboard.alias[k] === cle) dashboard.alias[k] = cibleCle;
+  dashboard.alias[cle] = cibleCle;
+  dashboard.alias[cle + ' (degressif)'] = cibleCle + ' (degressif)';
+  await idb.set('kv', 'dashboard', dashboard);
+  await idb.set('queue', null, {qid: 'alias#' + Date.now(), kind: 'alias', ancien: cle, nouveau: cibleCle,
+    message: `assimilation : ${e.nom} -> ${cibleLabel}`});
+  updateSyncUI(); flushQueue();
+  renderGraphSaisie(i);
+}
+function selectAssimiler(i, cle){
+  const opts = Object.entries((dashboard && dashboard.evolution_exos) || {})
+    .filter(([k]) => k !== cle)
+    .sort((a, b) => a[1].label.localeCompare(b[1].label))
+    .map(([k, v]) => `<option value="${esc(k)}">${esc(v.label)}</option>`).join('');
+  if (!opts) return '';
+  return `<div class="row" style="margin-top:6px">
+    <select style="flex:1" onchange="assimilerExo(${i}, this.value)">
+      <option value="">🔗 assimiler à un autre exercice (même machine ailleurs)…</option>${opts}
+    </select></div>`;
+}
 function renderGraphSaisie(i){
   const e = draft.exercices[i];
   const el = document.getElementById('gp-' + i);
-  const chips = `<div class="chips">${[['tonnage','Tonnage'],['charge','Charge'],['series','Reps/série']]
+  const cle = canonJs(e.nom);
+  const chips = `<div class="chips">${[['histo','Historique'],['tonnage','Tonnage'],['charge','Charge'],['series','Reps/série']]
     .map(([m, l]) => `<button class="ghost small per ${graphMode === m ? 'on' : ''}"
       onclick="graphMode='${m}';renderGraphSaisie(${i})">${l}</button>`).join('')}</div>`;
-  const ev = dashboard && dashboard.evolution_exos && dashboard.evolution_exos[canonJs(e.nom)];
+  if (graphMode === 'histo'){
+    el.innerHTML = chips + tableauHistoriqueExo(cle, {max: 4, ctx: 'gp', i}) + selectAssimiler(i, cle);
+    return;
+  }
+  const ev = dashboard && dashboard.evolution_exos && dashboard.evolution_exos[cle];
   if (!ev || !ev.points.length){ el.innerHTML = chips + '<p class="muted">Pas encore d\'historique pour cet exercice.</p>'; return; }
   if (graphMode === 'series'){ el.innerHTML = chips + seriesSvg(ev.points, i); return; }
   const pts = ev.points
@@ -1152,6 +1402,30 @@ document.addEventListener('pointercancel', () => {
   if (enCours) renderSaisie();
 });
 
+/* --- editer une seance passee : recharge le fichier dans l'editeur, reecrit le MEME fichier --- */
+async function editerSeance(id){
+  if (draft && !confirm('Une séance est en cours de saisie — l\'abandonner pour modifier celle-ci ?')) return;
+  const path = `seances_log/${id.slice(0, 4)}/${id}.json`;
+  let s = null;
+  try { s = await ghGetJson(path); } catch (err) { /* reseau */ }
+  if (!s){ alert('Séance introuvable — il faut du réseau pour charger une séance à modifier.'); return; }
+  draft = {schema_version: 1, edition: {path, id},
+    type_seance: s.type_seance, nom: s.nom || s.type_seance,
+    date: s.date, heure_debut: s.heure_debut || '00:00', heure_fin: s.heure_fin || null,
+    duree_min: s.duree_min || null,
+    lieu: s.lieu || '', note_seance: s.note_seance || '',
+    exercices: (s.exercices || []).map(e => ({nom: e.nom, groupe: e.groupe,
+      charge_kg: e.charge_kg != null ? e.charge_kg : '',
+      charge_note: e.charge_note || '', series: [...(e.series || [])],
+      ...(e.series_charges ? {series_charges: [...e.series_charges]} : {}),
+      ...(e.series_g ? {series_g: [...e.series_g]} : {}),
+      ...(e.series_charges_g ? {series_charges_g: [...e.series_charges_g]} : {}),
+      note: e.note || '', degressif_de: e.degressif_de || null, rappel: null}))};
+  await saveDraft();
+  show('seance'); renderSaisie();
+  window.scrollTo(0, 0);
+}
+
 /* --- renommer un exercice SANS perdre son historique : l'ancien nom devient un alias
    du nouveau (table alias_exercices de config.json, celle que le batch utilise deja). --- */
 async function renommerExo(i){
@@ -1211,7 +1485,9 @@ function terminerSeance(){
     ton += tonnageEntree(e.charge_kg === '' || e.charge_kg == null ? null : Number(e.charge_kg),
                          e.series, e.series_charges || null).t;
   $('#fin-recap').textContent = `${n} exercice(s) · ${Math.round(ton).toLocaleString('fr-FR')} kg`;
-  const min = Math.round((Date.now() - new Date(draft.date + 'T' + draft.heure_debut)) / 60000);
+  const min = (draft.edition && draft.duree_min)
+    ? draft.duree_min
+    : Math.round((Date.now() - new Date(draft.date + 'T' + draft.heure_debut)) / 60000);
   $('#fin-duree').value = (min >= 10 && min <= 480) ? fmtDuree(min) : '';
   $('#fin-erreur').textContent = '';
   $('#fin-fond').style.display = 'flex';
@@ -1231,23 +1507,30 @@ async function finaliserSeance(){
   fermerFin();
   const sources = draft.exercices.filter(faite);
   const exos = sources.map((e, i) => {
-    const reps = [], chs = [];
-    let custom = false;
     const chargeExo = e.charge_kg === '' ? null : Number(e.charge_kg);
-    e.series.forEach((v, j) => {
-      if (v === '' || v == null) return;
-      reps.push(Number(v));
-      const c = Array.isArray(e.series_charges) && e.series_charges[j] != null && e.series_charges[j] !== ''
-        ? Number(e.series_charges[j]) : null;
-      chs.push(c);
-      if (c != null && c !== chargeExo) custom = true;
-    });
+    const cote = (series, customs) => {
+      const reps = [], chs = [];
+      let custom = false;
+      (series || []).forEach((v, j) => {
+        if (v === '' || v == null) return;
+        reps.push(Number(v));
+        const c = Array.isArray(customs) && customs[j] != null && customs[j] !== ''
+          ? Number(customs[j]) : null;
+        chs.push(c);
+        if (c != null && c !== chargeExo) custom = true;
+      });
+      return {reps, chs, custom};
+    };
+    const d = cote(e.series, e.series_charges);
+    const g = Array.isArray(e.series_g) ? cote(e.series_g, e.series_charges_g) : null;
     return {
       ordre: i + 1, nom: e.nom.trim(), groupe: e.groupe,
       charge_kg: chargeExo,
       charge_note: (e.charge_note || '').trim() || null,
-      series: reps,
-      ...(custom ? {series_charges: chs} : {}),
+      series: d.reps,
+      ...(d.custom ? {series_charges: d.chs} : {}),
+      ...(g && g.reps.length ? {unilateral: true, series_g: g.reps,
+          ...(g.custom ? {series_charges_g: g.chs} : {})} : {}),
       series_note: null,
       note: (e.note || '').trim() || null,
       ...(e.degressif_de ? {degressif_de: e.degressif_de} : {}),
@@ -1260,15 +1543,31 @@ async function finaliserSeance(){
     heure_debut: draft.heure_debut, heure_fin: new Date().toTimeString().slice(0,5),
     lieu: (draft.lieu || '').trim() || null,
     note_seance: (draft.note_seance || '').trim() || null, exercices: exos};
+  if (draft.edition){
+    s.id = draft.edition.id;
+    s.heure_fin = draft.heure_fin || null;
+    await idb.set('queue', null, {qid: 'maj#' + Date.now(), kind: 'maj',
+      path: draft.edition.path, data: s, message: 'maj seance ' + s.id});
+    if (localLast[s.type_seance] && localLast[s.type_seance].id === s.id){
+      localLast[s.type_seance] = s;
+      await idb.set('kv', 'local_last', localLast);
+    }
+    updateSyncUI(); flushQueue();
+    draft = null; clearInterval(chronoTimer);
+    await idb.del('kv', 'draft');
+    show('home');
+    alert('Modifications enregistrées ✓ — recalcul complet au prochain batch.');
+    return;
+  }
   localLast[s.type_seance] = s;
   await idb.set('kv', 'local_last', localLast);
   // resume local pour la carte "Derniere seance" (dispo avant le batch)
   lastResume = {id: s.id, date: s.date, nom: s.nom, type_seance: s.type_seance,
     duree_min: duree,
     exos: exos.map((x, i) => {
-      const cur = tonnageEntree(x.charge_kg, x.series, x.series_charges || null);
+      const cur = tonnageExo(x);
       const r = sources[i].rappel || null;
-      const prev = r ? tonnageEntree(r.charge_kg, r.series || [], r.series_charges || null) : {t: 0, cm: null};
+      const prev = r ? tonnageExo(r) : {t: 0, cm: null};
       return {nom: x.nom, charge_kg: x.charge_kg, series: x.series,
               tonnage: cur.t || null, prev_tonnage: prev.t || null, prev_charge: prev.cm};
     })};
@@ -1358,8 +1657,8 @@ async function seancesDeSemaine(lundi){
     out.push({id: s.id, date: s.date, src: 'local', duree_min: s.duree_min || null,
       exos: (s.exercices || []).map(e => {
         return {cle: canonJs(e.nom), nom: e.nom, groupe: e.groupe,
-          series: (e.series || []).length, statut: null,
-          tonnage: tonnageEntree(e.charge_kg, e.series || [], e.series_charges || null).t};
+          series: (e.series || []).length + (e.series_g || []).length, statut: null,
+          tonnage: tonnageExo(e).t};
       })});
   }
   return out;
@@ -1559,6 +1858,11 @@ function renderSemaines(d){
 }
 
 /* --- evolution par exercice : ligne, 1 serie --- */
+function renderExoHisto(){
+  const el = $('#st-exo-histo'); if (!el) return;
+  const k = $('#st-exo-sel').value;
+  el.innerHTML = k ? tableauHistoriqueExo(k, {max: 4, ctx: 'stats'}) : '<p class="muted">Choisis un exercice.</p>';
+}
 function renderExoSelect(d){
   const keys = Object.keys(d.evolution_exos)
     .filter(k => d.evolution_exos[k].points.length >= 2)
@@ -1568,6 +1872,7 @@ function renderExoSelect(d){
   sel.innerHTML = keys.map(k => `<option value="${k}">${esc(d.evolution_exos[k].label)}</option>`).join('');
   if (keys.includes(cur)) sel.value = cur;
   renderEvolution();
+  renderExoHisto();
 }
 const EVO_MODES = [['charge','Charge'], ['reps','Reps'], ['tonnage','Tonnage'], ['e1rm','e1RM']];
 function renderEvolution(){
@@ -1760,7 +2065,10 @@ function renderSeancesList(d){
       <div class="spread">
         <span><span class="dot st-${s.couleur}"></span><b>${esc(s.nom || s.type_seance)}</b>
           <span class="muted">${fmtDate(s.date)}</span></span>
-        <span class="statut-lbl c-${s.couleur}">${ST_ICO[s.couleur]} ${s.pct_progression != null ? s.pct_progression + '%' : ST_LBL[s.couleur]}</span>
+        <span class="row" style="gap:6px">
+          <span class="statut-lbl c-${s.couleur}">${ST_ICO[s.couleur]} ${s.pct_progression != null ? s.pct_progression + '%' : ST_LBL[s.couleur]}</span>
+          <button class="ghost small" onclick="editerSeance('${s.id}')">✏️</button>
+        </span>
       </div>
       <div class="sub num">${Math.round(s.tonnage).toLocaleString('fr-FR')} kg${s.tonnage_partiel ? ' (+ exos non chiffrés)' : ''}${s.duree_min ? ' · ⏱ ' + fmtDuree(s.duree_min) : ''}
         · ${s.nb_exos_progression}/${s.nb_exos_comparables} exos en progression · 🔥 ${s.streak_apres}</div>
