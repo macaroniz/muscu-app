@@ -174,6 +174,17 @@ body.en-drag, body.en-drag *{-webkit-user-select:none !important; user-select:no
 .h-jaune{border-color:var(--warn)} .h-bleu{border-color:var(--s1)}
 .hdate{white-space:nowrap} .hdate small{display:block; color:var(--muted); font-weight:400}
 .hnote{color:var(--ink2); font-size:.74rem; max-width:120px}
+/* --- v2.4 : fusion, degressif compact, superset --- */
+tr.fus{opacity:.72}
+.htab-wrap{overflow-x:auto}
+.htab-wrap.full{max-height:340px; overflow-y:auto}
+.degline{display:flex; gap:6px; align-items:center; flex-wrap:wrap;
+  border-left:3px solid var(--s1); padding:4px 0 4px 8px; margin-top:8px}
+.degline .charge-in{width:70px}
+.ss-badge{border:1px solid var(--s1); color:var(--s1); border-radius:6px;
+  padding:1px 6px; font-size:.72rem; font-weight:700; white-space:nowrap}
+.ss-repos{width:78px; min-height:32px; padding:4px; font-size:.82rem}
+.apercu-fusion{border:1.5px dashed var(--s1); border-radius:10px; padding:8px; margin-top:6px}
 /* --- semaine --- */
 .wbar{background:var(--plane); border-radius:8px; height:22px; position:relative; overflow:hidden}
 .wbar>div{height:100%; background:var(--s1); border-radius:8px 4px 4px 8px; min-width:2px;
@@ -270,13 +281,18 @@ body.en-drag, body.en-drag *{-webkit-user-select:none !important; user-select:no
       <button class="ghost small" onclick="semaineNav(1)" id="sem-next">›</button>
     </div>
   </div>
+  <div class="chips">
+    <button class="ghost small per" id="sem-mode-s" onclick="semMode='semaine';renderSemaine()">Semaine</button>
+    <button class="ghost small per" id="sem-mode-m" onclick="semMode='mois';renderSemaine()">Mois</button>
+  </div>
   <p class="sub" id="sem-titre"></p>
   <div class="card" id="sem-resume"></div>
   <div id="sem-groupes"></div>
   <div id="sem-extra"></div>
-  <p class="muted">Programme figé au lundi (dernière version de chaque séance avant la semaine).
-  Répartis-le librement : un exo fait dans n'importe quelle séance compte. Un exo improvisé
-  apparaît dans « En plus » et intègre le programme la semaine suivante.</p>
+  <div id="sem-programme"></div>
+  <p class="muted">Répartis ton programme librement sur la semaine : un exo fait dans n'importe
+  quelle séance compte. Un exo improvisé apparaît dans « En plus ». Un exo non rempli reste
+  simplement « à faire » — il ne pollue jamais l'historique.</p>
 </div>
 
 <!-- ======================= STATS ======================= -->
@@ -425,8 +441,8 @@ window.addEventListener('unhandledrejection', (e) => {
   const s = document.getElementById('home-status');
   if (s) s.textContent = '⚠️ Erreur : ' + (e.reason && e.reason.message || e.reason);
 });
-const APP_VERSION = '2.3.0';
-const APP_BUILD = '31/08/2026';
+const APP_VERSION = '2.4.0';
+const APP_BUILD = '04/09/2026';
 const GROUPES = ['Pec','Dos','Epaules','Biceps','Triceps','Quadriceps','Ischios','Fessiers','Mollets','Lombaires','Abdos'];
 const TYPES = [
   {id:'upper_a', nom:'Upper A'}, {id:'upper_b', nom:'Upper B'},
@@ -545,9 +561,12 @@ async function flushQueue(){
   try {
     const items = await idb.all('queue');
     for (const it of items){
-      if (it.kind === 'alias' || it.kind === 'maj'){
+      if (it.kind === 'alias' || it.kind === 'alias-suppr' || it.kind === 'maj' || it.kind === 'prog'){
         try {
-          if (it.kind === 'alias') await appliqueAlias(it); else await appliqueMaj(it);
+          if (it.kind === 'alias') await appliqueAlias(it);
+          else if (it.kind === 'alias-suppr') await appliqueAliasSuppr(it);
+          else if (it.kind === 'prog') await appliqueProg(it);
+          else await appliqueMaj(it);
           await idb.del('queue', it.qid);
           localStorage.setItem('muscu_lastsync', new Date().toISOString());
         }
@@ -605,6 +624,43 @@ async function appliqueAlias(it){
   if (!r2.ok) throw Object.assign(new Error('PUT config ' + r2.status), {status: r2.status});
 }
 
+/* sauvegarde du programme : local immediat + un seul item 'prog' en file (dernier etat gagne) */
+async function sauveProgramme(message){
+  await idb.set('kv', 'programme', programme);
+  for (const it of await idb.all('queue')) if (it.kind === 'prog') await idb.del('queue', it.qid);
+  await idb.set('queue', null, {qid: 'prog#' + Date.now(), kind: 'prog',
+    data: programme, message: message ? 'programme : ' + message : 'programme'});
+  updateSyncUI(); flushQueue();
+}
+/* ecrit programme.json (create-or-update : GET sha, 404 tolere) */
+async function appliqueProg(it){
+  const base = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/programme.json`;
+  const r = await ghFetch(`${base}?ref=${cfg.branch || 'main'}`, {headers: ghHeaders(false), cache: 'no-store'});
+  let sha = null;
+  if (r.ok) sha = (await r.json()).sha;
+  else if (r.status !== 404) throw Object.assign(new Error('GET programme ' + r.status), {status: r.status});
+  const r2 = await ghFetch(base, {method: 'PUT', headers: ghHeaders(false),
+    body: JSON.stringify({message: it.message, branch: cfg.branch || 'main',
+      ...(sha ? {sha} : {}), content: b64utf8(JSON.stringify(it.data, null, 1))})});
+  if (!r2.ok) throw Object.assign(new Error('PUT programme ' + r2.status), {status: r2.status});
+}
+
+/* retire un alias de config.json (defusion d'historique) */
+async function appliqueAliasSuppr(it){
+  const base = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/config.json`;
+  const r = await ghFetch(`${base}?ref=${cfg.branch || 'main'}`, {headers: ghHeaders(false), cache: 'no-store'});
+  if (!r.ok) throw Object.assign(new Error('GET config ' + r.status), {status: r.status});
+  const j = await r.json();
+  const conf = JSON.parse(decodeURIComponent(escape(atob(String(j.content).replace(/\n/g, '')))));
+  conf.alias_exercices = conf.alias_exercices || {};
+  delete conf.alias_exercices[it.ancien];
+  delete conf.alias_exercices[it.ancien + ' (degressif)'];
+  const r2 = await ghFetch(base, {method: 'PUT', headers: ghHeaders(false),
+    body: JSON.stringify({message: it.message, branch: cfg.branch || 'main', sha: j.sha,
+      content: b64utf8(JSON.stringify(conf, null, 1))})});
+  if (!r2.ok) throw Object.assign(new Error('PUT config ' + r2.status), {status: r2.status});
+}
+
 /* reecrit un fichier de seance existant (edition de l'historique) : GET sha puis PUT */
 async function appliqueMaj(it){
   const base = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/${it.path}`;
@@ -622,9 +678,11 @@ async function refreshData(force){
   if (!cfg.token || !cfg.owner) { renderHome(); return; }
   $('#home-status').textContent = 'Actualisation…';
   try {
-    const [lbt, dash] = await Promise.all([
+    const [lbt, dash, prog] = await Promise.all([
       ghGetJson('computed/last_by_type.json'),
-      ghGetJson('computed/dashboard.json')]);
+      ghGetJson('computed/dashboard.json'),
+      ghGetJson('programme.json')]);
+    if (prog){ programme = prog; await idb.set('kv', 'programme', prog); }
     if (lbt) { lastByType = lbt; await idb.set('kv', 'last_by_type', lbt); }
     else {
       const base = await ghGetJson('seances_base.json');
@@ -779,6 +837,19 @@ function tonnageExo(e){
   return {t: a.t + b.t, cm: a.cm == null ? b.cm : (b.cm == null ? a.cm : Math.max(a.cm, b.cm))};
 }
 
+/* rappel = derniere fois ou l'exo a VRAIMENT ete fait (occurrences reelles, tous types
+   de seance confondus) — un exo saute une fois garde donc son vrai rappel. */
+function rappelDepuisOccurrences(nom){
+  const occs = occurrencesExo(canonJs(nom));
+  if (!occs.length) return null;
+  const o = occs[occs.length - 1];
+  return {charge_kg: o.charge, charge_note: o.charge_note || null,
+    series: o.series || [], series_note: null,
+    series_charges: o.charges || null,
+    series_g: o.series_g || null, series_charges_g: o.charges_g || null,
+    note: o.note || null};
+}
+
 async function demarrerSeance(type){
   if (draft && draft.type_seance !== type &&
       !confirm('Une séance "' + draft.nom + '" est en cours. La remplacer ?')) return;
@@ -789,16 +860,35 @@ async function demarrerSeance(type){
     schema_version: 1, type_seance: type, nom: t.nom, date: today(),
     heure_debut: new Date().toTimeString().slice(0,5), heure_fin: null,
     lieu: model && model.lieu ? model.lieu : '', note_seance: '',
-    exercices: (model ? model.exercices : []).map(e => nouvelExo(
-      e.nom, e.groupe, {charge_kg: e.charge_kg, charge_note: e.charge_note || null,
-        series: e.series || [], series_note: e.series_note || null,
-        series_charges: e.series_charges || null,
-        series_g: e.series_g || null, series_charges_g: e.series_charges_g || null,
-        note: e.note || null},
-      e.degressif_de || (/\(degressif\)/i.test(e.nom) ? e.nom.replace(/\s*\(degressif\)\s*/i, '').trim() : null))),
+    exercices: templateSeance(type).map(it => {
+      const e = nouvelExo(it.nom, it.groupe,
+        rappelDepuisOccurrences(it.nom) || it.rappel_modele || null,
+        it.degressif_de || (/\(degressif\)/i.test(it.nom) ? it.nom.replace(/\s*\(degressif\)\s*/i, '').trim() : null));
+      if (it.series_cible) e.series = Array(Math.min(it.series_cible, 6)).fill('');
+      return e;
+    }),
   };
   await saveDraft();
   show('seance'); renderSaisie();
+}
+
+/* exos proposes pour un type de seance : le programme si defini, sinon le dernier modele */
+function templateSeance(type){
+  const prog = programmeActuel();
+  if (prog){
+    const items = prog.exos.filter(x => !x.type || x.type === type)
+      .map(x => ({nom: x.nom, groupe: x.groupe || '?', series_cible: Number(x.series) || null,
+                  degressif_de: null, rappel_modele: null}));
+    if (items.length) return items;
+  }
+  const model = modelFor(type);
+  return (model ? model.exercices : []).map(e => ({nom: e.nom, groupe: e.groupe,
+    degressif_de: e.degressif_de || null, series_cible: null,
+    rappel_modele: {charge_kg: e.charge_kg, charge_note: e.charge_note || null,
+      series: e.series || [], series_note: e.series_note || null,
+      series_charges: e.series_charges || null,
+      series_g: e.series_g || null, series_charges_g: e.series_charges_g || null,
+      note: e.note || null}}));
 }
 async function saveDraft(){ if (draft) await idb.set('kv', 'draft', draft); }
 
@@ -965,14 +1055,17 @@ function inputsBloc(e, i){
 }
 function degBloc(j){
   const e = draft.exercices[j];
-  return `<div class="degblock" id="exo-${j}">
-    <div class="spread">
-      <b>↳ Dégressif</b>
-      <span class="row"><span class="valbadge num" id="val-${j}"></span>
-        <button class="ghost small" style="color:var(--crit)" onclick="retirerExo(${j})">✕</button></span>
-    </div>
-    ${rappelHtml(e.rappel, j)}
-    ${inputsBloc(e, j)}
+  const r = e.rappel;
+  const ph = r && r.charge_kg != null ? String(r.charge_kg) : 'kg';
+  const titre = r && r.charge_kg != null
+    ? `dernière fois : ${kg(r.charge_kg)} kg — ${(r.series || []).join('·')}` : 'dégressif';
+  return `<div class="degline" id="exo-${j}" title="${esc(titre)}">
+    <span class="cotelbl" title="dégressif">↳</span>
+    <input class="charge-in num" type="number" inputmode="decimal" step="0.5" placeholder="${esc(ph)}"
+      value="${e.charge_kg}" onchange="setExo(${j},'charge_kg',this.value)">
+    ${chipsRangee(e, j, 0)}
+    <span class="valbadge num" id="val-${j}"></span>
+    <button class="ghost small" style="color:var(--crit)" onclick="retirerExo(${j})">✕</button>
   </div>`;
 }
 /* si la salle du jour est connue : derniere perf DANS CETTE salle (machines differentes) */
@@ -992,12 +1085,59 @@ function iciLigne(i){
     <b>${o.charge != null ? kg(o.charge) + ' kg' : '—'}</b> — ${st}
     <span class="muted">· ${fmtDate(o.date)}</span></div>`;
 }
+function lierSuperset(i, val){
+  if (val === '') return;
+  const e = draft.exercices[i];
+  const cible = draft.exercices[+val];
+  if (!cible) return;
+  let grp = cible.superset || e.superset;
+  if (!grp){
+    const pris = new Set(draft.exercices.map(x => x.superset).filter(Boolean));
+    grp = 'ABCDEFGH'.split('').find(l => !pris.has(l)) || 'Z';
+  }
+  const repos = cible.superset_repos_s || e.superset_repos_s || null;
+  e.superset = grp; cible.superset = grp;
+  if (repos){ e.superset_repos_s = repos; cible.superset_repos_s = repos; }
+  saveDraft(); renderSaisie();
+}
+function delierSuperset(i){
+  const e = draft.exercices[i];
+  delete e.superset; delete e.superset_repos_s;
+  saveDraft(); renderSaisie();
+}
+function setReposSS(i, v){
+  const grp = draft.exercices[i].superset;
+  if (!grp) return;
+  const s = v === '' ? null : Number(v);
+  for (const x of draft.exercices) if (x.superset === grp){
+    if (s == null) delete x.superset_repos_s; else x.superset_repos_s = s;
+  }
+  saveDraft();
+}
+function ssControle(c){
+  const e = draft.exercices[c.idx];
+  if (e.superset){
+    const premier = cartesSaisie().find(x => draft.exercices[x.idx].superset === e.superset);
+    const montreRepos = premier && premier.idx === c.idx;
+    return `${montreRepos ? `<input type="number" inputmode="numeric" class="ss-repos num" placeholder="repos (s)"
+        value="${e.superset_repos_s != null ? e.superset_repos_s : ''}" onchange="setReposSS(${c.idx}, this.value)">` : ''}
+      <button class="ghost small" onclick="delierSuperset(${c.idx})" title="délier du superset">✕⛓</button>`;
+  }
+  const autres = cartesSaisie().filter(x => x.idx !== c.idx);
+  if (!autres.length) return '';
+  return `<select class="small" style="max-width:160px; min-height:36px; padding:4px 8px; font-size:.85rem"
+      onchange="lierSuperset(${c.idx}, this.value)">
+    <option value="">⛓ superset avec…</option>
+    ${autres.map(x => `<option value="${x.idx}">${esc(draft.exercices[x.idx].nom)}</option>`).join('')}
+  </select>`;
+}
 function exoCard(c){
   const e = draft.exercices[c.idx];
   return `<div class="exo" id="exo-${c.idx}" data-idx="${c.idx}">
     <div class="spread exo-head" data-drag="${c.idx}">
       <span class="nom" onclick="toggleGraph(${c.idx})"><span class="grip">≡</span>${esc(e.nom)} <span class="muted" style="font-weight:400">📈</span></span>
       <span class="row" style="gap:6px">
+        ${e.superset ? `<span class="ss-badge">⛓ ${esc(e.superset)}${e.superset_repos_s ? '·' + e.superset_repos_s + 's' : ''}</span>` : ''}
         <span class="valbadge num" id="val-${c.idx}"></span>
         <span class="grp">${esc(e.groupe)}</span>
       </span>
@@ -1009,6 +1149,7 @@ function exoCard(c){
     ${c.degs.map(degBloc).join('')}
     <div class="row" style="margin-top:8px">
       <button class="ghost small" onclick="addDegressif(${c.idx})">+ dégressif</button>
+      ${ssControle(c)}
       <button class="ghost small" onclick="renommerExo(${c.idx})">✏️ renommer</button>
       <button class="ghost small" style="color:var(--crit)" onclick="retirerExo(${c.idx})">retirer</button>
     </div>
@@ -1063,16 +1204,7 @@ function addSerie(i, g){
 function addDegressif(i){
   const p = draft.exercices[i];
   const nomDeg = p.nom + ' (degressif)';
-  const model = modelFor(draft.type_seance);
-  let r = null;
-  if (model) {
-    const prev = (model.exercices || []).find(x => x.nom.toLowerCase() === nomDeg.toLowerCase());
-    if (prev) r = {charge_kg: prev.charge_kg, charge_note: prev.charge_note || null,
-      series: prev.series || [], series_note: prev.series_note || null,
-      series_charges: prev.series_charges || null,
-      series_g: prev.series_g || null, series_charges_g: prev.series_charges_g || null,
-      note: prev.note || null};
-  }
+  const r = rappelDepuisOccurrences(nomDeg);
   draft.exercices.splice(i + 1, 0, nouvelExo(nomDeg, p.groupe, r, p.nom));
   saveDraft(); renderSaisie();
   setTimeout(() => { const el = document.getElementById('exo-' + (i + 1)); if (el) el.scrollIntoView({block: 'center'}); }, 50);
@@ -1106,6 +1238,8 @@ function occurrencesExo(cle){
     if (!pt.date) continue;
     ids.add(pt.seance);
     out.push({date: pt.date, seance: pt.seance, lieu: pt.lieu || null, note: pt.note || null,
+      nom: pt.nom || null, charge_note: pt.charge_note || null,
+      superset: pt.superset || null, superset_repos_s: pt.superset_repos_s || null,
       charge: pt.charge_max, series: pt.series || [], charges: pt.series_charges || null,
       series_g: pt.series_g || null, charges_g: pt.series_charges_g || null,
       tonnage: pt.metrique === 'tonnage' ? pt.valeur : null});
@@ -1118,6 +1252,8 @@ function occurrencesExo(cle){
       if (canonJs(e.nom) !== cle) continue;
       const m = tonnageExo(e);
       out.push({date: s.date, seance: s.id, lieu: s.lieu || null, note: e.note || null,
+        nom: e.nom || null, charge_note: e.charge_note || null,
+        superset: e.superset || null, superset_repos_s: e.superset_repos_s || null,
         charge: e.charge_kg !== '' && e.charge_kg != null ? Number(e.charge_kg) : null,
         series: (e.series || []).map(Number), charges: e.series_charges || null,
         series_g: e.series_g ? e.series_g.map(Number) : null, charges_g: e.series_charges_g || null,
@@ -1155,16 +1291,28 @@ function basculeHisto(btn){
   else renderGraphSaisie(+btn.dataset.i);
 }
 /* tableau : 1 ligne par occurrence (recentes en haut), cellules encadrees
-   vert (bat la meme serie de la fois precedente) / rouge (en-dessous) / jaune (egal) / bleu (pas de comparable) */
+   vert (bat la meme serie de la fois precedente) / rouge (en-dessous) / jaune (egal) / bleu (pas de comparable).
+   Les degressives de l'exo apparaissent dans le MEME tableau (lignes attenuees, comparees entre elles),
+   les occurrences fusionnees affichent leur nom d'origine. */
 function tableauHistoriqueExo(cle, opts = {}){
-  const occs = occurrencesExo(cle);
-  if (!occs.length) return '<p class="muted">Pas encore d\'historique pour cet exercice.</p>';
-  const max = histoDeplie[cle] ? 999 : (opts.max || 4);
-  const vis = occs.slice(-max);
-  const nbS = Math.max(1, ...vis.map(o => Math.max((o.series || []).length, (o.series_g || []).length)));
-  const lignes = [...vis].reverse().map(o => {
-    const idx = occs.indexOf(o);
-    const prev = idx > 0 ? occs[idx - 1] : null;
+  const mains = occurrencesExo(cle);
+  const degs = occurrencesExo(cle + ' (degressif)');
+  if (!mains.length && !degs.length)
+    return '<p class="muted">Pas encore d\'historique pour cet exercice.</p>';
+  const label = ((dashboard && dashboard.evolution_exos && dashboard.evolution_exos[cle]) || {}).label || '';
+  const nl = normJs(label);
+  const deplie = !!histoDeplie[cle];
+  const max = deplie ? 9999 : (opts.max || 4);
+  const visMain = mains.slice(-max);
+  const idsVis = new Set(visMain.map(o => o.seance));
+  const rows = visMain.map(o => ({o, chain: mains, deg: false}));
+  for (const o of degs) if (deplie || idsVis.has(o.seance)) rows.push({o, chain: degs, deg: true});
+  rows.sort((a, b) => (a.o.date === b.o.date ? (a.deg - b.deg) : (a.o.date < b.o.date ? 1 : -1)));
+  const nbS = Math.max(1, ...rows.map(r => Math.max((r.o.series || []).length, (r.o.series_g || []).length)));
+  const lignes = rows.map(r => {
+    const o = r.o;
+    const idx = r.chain.indexOf(o);
+    const prev = idx > 0 ? r.chain[idx - 1] : null;
     const cells = Array.from({length: nbS}, (_, j) => {
       const txt = txtSerieOcc(o, j);
       if (!txt) return '<td></td>';
@@ -1175,19 +1323,46 @@ function tableauHistoriqueExo(cle, opts = {}){
       }
       return `<td><span class="hcell ${cls} num">${txt}</span></td>`;
     }).join('');
-    return `<tr>
-      <td class="hdate"><b>${fmtDate(o.date)}</b>${o.lieu ? `<small>📍 ${esc(o.lieu)}</small>` : ''}${o.series_g ? '<small>unilatéral D|G</small>' : ''}</td>
-      <td class="num">${o.charge != null ? kg(o.charge) : '—'}</td>
+    const fus = !r.deg && nl && o.nom && normJs(o.nom) !== nl;
+    return `<tr class="${(r.deg || fus) ? 'fus' : ''}">
+      <td class="hdate">${r.deg ? `<span class="muted">↳ dégressif</span><small>${fmtDate(o.date)}</small>` : `<b>${fmtDate(o.date)}</b>`}
+        ${!r.deg && o.lieu ? `<small>📍 ${esc(o.lieu)}</small>` : ''}
+        ${fus ? `<small>⇄ ${esc(o.nom)}</small>` : ''}
+        ${o.superset ? `<small>⛓${esc(o.superset)}${o.superset_repos_s ? '·' + o.superset_repos_s + 's' : ''}</small>` : ''}
+        ${!r.deg && o.series_g ? '<small>unilatéral D|G</small>' : ''}</td>
+      <td class="num">${o.charge != null ? kg(o.charge) : (o.charge_note ? esc(o.charge_note) : '—')}</td>
       ${cells}
       <td class="hnote">${o.note ? '📝 ' + esc(o.note) : ''}</td>
     </tr>`;
   }).join('');
-  const plus = (occs.length > (opts.max || 4))
+  const plus = (mains.length > (opts.max || 4))
     ? `<button class="ghost small" data-cle="${esc(cle)}" data-ctx="${opts.ctx || 'stats'}" data-i="${opts.i != null ? opts.i : ''}"
-        onclick="basculeHisto(this)">${histoDeplie[cle] ? 'voir moins' : `voir tout (${occs.length})`}</button>` : '';
-  return `<div style="overflow-x:auto"><table class="htab">
+        onclick="basculeHisto(this)">${deplie ? 'voir moins' : `voir tout l'historique (${mains.length})`}</button>` : '';
+  return `<div class="htab-wrap${deplie ? ' full' : ''}"><table class="htab">
     <tr><th>séance</th><th>kg</th>${Array.from({length: nbS}, (_, j) => `<th>S${j + 1}</th>`).join('')}<th>note</th></tr>
-    ${lignes}</table></div>${plus}`;
+    ${lignes}</table></div>${plus}${gestionAlias(cle, opts)}`;
+}
+/* noms fusionnes vers cette cle : visibles et defusionnables (gestion d'historique autonome) */
+function gestionAlias(cle, opts = {}){
+  const al = (dashboard && dashboard.alias) || {};
+  const fusionnes = Object.keys(al).filter(k => al[k] === cle && !k.endsWith(' (degressif)'));
+  if (!fusionnes.length) return '';
+  return `<p class="muted" style="margin:6px 0 0">Noms fusionnés : ${fusionnes.map(k =>
+    `<span class="tag">${esc(k)} <a href="#" style="color:var(--crit); text-decoration:none"
+      data-k="${esc(k)}" data-ctx="${opts.ctx || 'stats'}" data-i="${opts.i != null ? opts.i : ''}"
+      onclick="defusionner(event, this)">✕</a></span>`).join(' ')}</p>`;
+}
+async function defusionner(ev, a){
+  ev.preventDefault();
+  const k = a.dataset.k;
+  if (!confirm(`Séparer « ${k} » de cet historique ?\n(ses occurrences retrouveront leur propre courbe au prochain calcul)`)) return;
+  delete dashboard.alias[k];
+  delete dashboard.alias[k + ' (degressif)'];
+  await idb.set('kv', 'dashboard', dashboard);
+  await idb.set('queue', null, {qid: 'alias#' + Date.now(), kind: 'alias-suppr', ancien: normJs(k),
+    message: 'défusion : ' + k});
+  updateSyncUI(); flushQueue();
+  if (a.dataset.ctx === 'stats') renderExoHisto(); else renderGraphSaisie(+a.dataset.i);
 }
 
 /* --- graphique d'exo pendant la saisie (4 modes commutables, Historique par defaut) --- */
@@ -1200,15 +1375,35 @@ function toggleGraph(i){
   graphOuvert = i; el.style.display = 'block';
   renderGraphSaisie(i);
 }
+let fusionCible = null;
+function previsualiserFusion(i, cibleCle){
+  fusionCible = cibleCle || null;
+  renderGraphSaisie(i);
+}
+/* apercu : ce que la fusion va ajouter, pour verifier la coherence AVANT de confirmer */
+function apercuFusion(i, cle, cibleCle){
+  const cibleLabel = ((dashboard.evolution_exos || {})[cibleCle] || {}).label || cibleCle;
+  const occs = occurrencesExo(cibleCle).slice(-4).reverse();
+  const lignes = occs.map(o => `<div class="sub num">• ${fmtDate(o.date)} — ${o.charge != null ? kg(o.charge) + ' kg' : '—'}
+      × ${(o.series || []).join('·') || '—'}${o.lieu ? ` <span class="muted">📍 ${esc(o.lieu)}</span>` : ''}</div>`).join('');
+  return `<div class="apercu-fusion">
+    <b>Aperçu — fusionner avec « ${esc(cibleLabel)} »</b>
+    ${lignes || '<p class="muted">aucune occurrence</p>'}
+    <p class="muted" style="margin:4px 0 6px">Ces occurrences rejoindront l'historique de « ${esc(draft.exercices[i].nom)} ».
+    Réversible (✕ dans « noms fusionnés »).</p>
+    <div class="row">
+      <button class="small" onclick="assimilerExo(${i}, '${esc(cibleCle)}')">✓ Confirmer la fusion</button>
+      <button class="ghost small" onclick="previsualiserFusion(${i}, '')">Annuler</button>
+    </div>
+  </div>`;
+}
 async function assimilerExo(i, cibleCle){
+  fusionCible = null;
   if (!cibleCle){ return; }
   const e = draft.exercices[i];
   const cle = canonJs(e.nom);
   if (cle === cibleCle){ renderGraphSaisie(i); return; }
   const cibleLabel = (dashboard.evolution_exos[cibleCle] || {}).label || cibleCle;
-  if (!confirm(`Fusionner l'historique de « ${e.nom} » avec « ${cibleLabel} » ?\n(même exercice sur une machine différente)`)){
-    renderGraphSaisie(i); return;
-  }
   dashboard.alias = dashboard.alias || {};
   for (const k in dashboard.alias) if (dashboard.alias[k] === cle) dashboard.alias[k] = cibleCle;
   dashboard.alias[cle] = cibleCle;
@@ -1226,7 +1421,7 @@ function selectAssimiler(i, cle){
     .map(([k, v]) => `<option value="${esc(k)}">${esc(v.label)}</option>`).join('');
   if (!opts) return '';
   return `<div class="row" style="margin-top:6px">
-    <select style="flex:1" onchange="assimilerExo(${i}, this.value)">
+    <select style="flex:1" onchange="previsualiserFusion(${i}, this.value)">
       <option value="">🔗 assimiler à un autre exercice (même machine ailleurs)…</option>${opts}
     </select></div>`;
 }
@@ -1238,7 +1433,8 @@ function renderGraphSaisie(i){
     .map(([m, l]) => `<button class="ghost small per ${graphMode === m ? 'on' : ''}"
       onclick="graphMode='${m}';renderGraphSaisie(${i})">${l}</button>`).join('')}</div>`;
   if (graphMode === 'histo'){
-    el.innerHTML = chips + tableauHistoriqueExo(cle, {max: 4, ctx: 'gp', i}) + selectAssimiler(i, cle);
+    el.innerHTML = chips + tableauHistoriqueExo(cle, {max: 4, ctx: 'gp', i})
+      + (fusionCible ? apercuFusion(i, cle, fusionCible) : selectAssimiler(i, cle));
     return;
   }
   const ev = dashboard && dashboard.evolution_exos && dashboard.evolution_exos[cle];
@@ -1420,7 +1616,10 @@ async function editerSeance(id){
       ...(e.series_charges ? {series_charges: [...e.series_charges]} : {}),
       ...(e.series_g ? {series_g: [...e.series_g]} : {}),
       ...(e.series_charges_g ? {series_charges_g: [...e.series_charges_g]} : {}),
-      note: e.note || '', degressif_de: e.degressif_de || null, rappel: null}))};
+      ...(e.superset ? {superset: e.superset} : {}),
+      ...(e.superset_repos_s ? {superset_repos_s: e.superset_repos_s} : {}),
+      note: e.note || '', degressif_de: e.degressif_de || null,
+      rappel: rappelDepuisOccurrences(e.nom)}))};
   await saveDraft();
   show('seance'); renderSaisie();
   window.scrollTo(0, 0);
@@ -1533,6 +1732,8 @@ async function finaliserSeance(){
           ...(g.custom ? {series_charges_g: g.chs} : {})} : {}),
       series_note: null,
       note: (e.note || '').trim() || null,
+      ...(e.superset ? {superset: e.superset,
+          ...(e.superset_repos_s ? {superset_repos_s: Number(e.superset_repos_s)} : {})} : {}),
       ...(e.degressif_de ? {degressif_de: e.degressif_de} : {}),
     };
   });
@@ -1579,6 +1780,12 @@ async function finaliserSeance(){
   alert('Séance enregistrée 💪 Elle part sur GitHub dès que tu as du réseau.');
 }
 
+/* ==================== PROGRAMME (stub — complete par la section programme) ==================== */
+let programme = null;
+function programmeActuel(){
+  return (programme && programme.actuel && (programme.actuel.exos || []).length) ? programme.actuel : null;
+}
+
 /* ==================== SEMAINE (calcul 100% client : marche hors ligne) ==================== */
 let semaineOffset = 0;
 const normJs = s => String(s || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
@@ -1613,8 +1820,27 @@ function modelePourSemaine(tyId, lundi){
         ? Math.max(1, Math.round(e.valeur / e.charge_max / e.nb_series)) : 0)}))};
 }
 
-/* pool hebdo = union des exos des 5 modeles (figes au lundi), deduplique par nom canonique */
+/* pool hebdo : le PROGRAMME s'il est defini (cibles voulues), sinon l'union des 5 modeles
+   figes au lundi. Un exo non rempli reste donc "a faire" tant qu'il est au programme. */
 function poolHebdo(lundi){
+  const prog = programmeActuel();
+  if (prog){
+    const pool = new Map();
+    for (const x of (prog.exos || [])){
+      const c = canonJs(x.nom);
+      let it = pool.get(c);
+      if (!it){ it = {cle: c, nom: x.nom, groupe: x.groupe || '?', types: [], target: 0,
+                      last: null, lastDate: ''}; pool.set(c, it); }
+      if (x.type && !it.types.includes(x.type)) it.types.push(x.type);
+      it.target += Number(x.series) || 0;
+    }
+    for (const it of pool.values()){
+      const occs = occurrencesExo(it.cle);
+      const o = occs.length ? occs[occs.length - 1] : null;
+      if (o) it.last = {charge: o.charge, charge_note: o.charge_note || null, series: o.series || []};
+    }
+    return pool;
+  }
   const pool = new Map();
   for (const ty of TYPES){
     const m = modelePourSemaine(ty.id, lundi); if (!m) continue;
@@ -1635,9 +1861,8 @@ function poolHebdo(lundi){
   return pool;
 }
 
-/* seances de la semaine : dashboard (batch) + locales pas encore calculees, dedup par id */
-async function seancesDeSemaine(lundi){
-  const deb = isoJour(lundi), fin = isoJour(addJours(lundi, 7));
+/* seances entre deux dates ISO [deb, fin) : dashboard (batch) + locales, dedup par id */
+async function seancesEntre(deb, fin){
   const vues = new Set(), out = [];
   for (const s of ((dashboard && dashboard.seances) || [])){
     if (s.date && s.date >= deb && s.date < fin && !vues.has(s.id)){
@@ -1662,6 +1887,9 @@ async function seancesDeSemaine(lundi){
       })});
   }
   return out;
+}
+async function seancesDeSemaine(lundi){
+  return seancesEntre(isoJour(lundi), isoJour(addJours(lundi, 7)));
 }
 
 async function calculeSemaine(lundi){
@@ -1690,7 +1918,73 @@ async function calculeSemaine(lundi){
     couverts, poolN: pool.size};
 }
 
-function semaineNav(d){ semaineOffset = Math.min(0, semaineOffset + d); renderSemaine(); }
+let semMode = 'semaine', moisOffset = 0;
+function semaineNav(d){
+  if (semMode === 'mois') moisOffset = Math.min(0, moisOffset + d);
+  else semaineOffset = Math.min(0, semaineOffset + d);
+  renderSemaine();
+}
+
+/* --- vue MOIS : agregat des semaines du mois (cible = cible hebdo x nb de lundis) --- */
+async function calculeMois(annee, mois){
+  const deb = isoJour(new Date(annee, mois, 1));
+  const fin = isoJour(new Date(annee, mois + 1, 1));
+  const seances = await seancesEntre(deb, fin);
+  const pool = poolHebdo(lundiDe(new Date()));
+  let nbSem = 0;
+  for (let j = new Date(annee, mois, 1); j.getMonth() === mois; j.setDate(j.getDate() + 1))
+    if (j.getDay() === 1) nbSem++;
+  const faits = new Map();
+  let tonnage = 0, tempsMin = 0;
+  for (const s of seances){
+    if (s.duree_min) tempsMin += s.duree_min;
+    for (const e of s.exos){
+      tonnage += e.tonnage || 0;
+      const f = faits.get(e.cle) || {series: 0};
+      f.series += e.series;
+      faits.set(e.cle, f);
+    }
+  }
+  let cibleTot = 0, faitTot = 0;
+  const parGroupe = new Map();
+  for (const it of pool.values()){
+    const fait = (faits.get(it.cle) || {series: 0}).series;
+    const cible = it.target * nbSem;
+    if (cible){ cibleTot += cible; faitTot += Math.min(fait, cible); }
+    const g = parGroupe.get(it.groupe) || {fait: 0, cible: 0};
+    g.fait += cible ? Math.min(fait, cible) : fait;
+    g.cible += cible;
+    parGroupe.set(it.groupe, g);
+  }
+  return {seances, tonnage, tempsMin, nbSem, cibleTot, faitTot,
+    pct: cibleTot ? Math.round(100 * faitTot / cibleTot) : 0, parGroupe};
+}
+async function renderMois(){
+  const ref = new Date(); ref.setDate(1); ref.setMonth(ref.getMonth() + moisOffset);
+  const nx = $('#sem-next'); if (nx) nx.disabled = moisOffset >= 0;
+  $('#sem-titre').textContent = (moisOffset === 0 ? 'Mois en cours · ' : '') +
+    ref.toLocaleDateString('fr-FR', {month: 'long', year: 'numeric'});
+  const m = await calculeMois(ref.getFullYear(), ref.getMonth());
+  const valide = m.pct >= 100;
+  $('#sem-resume').innerHTML = `
+    <div class="spread"><b>${valide ? '✅ Mois validé' : 'Avancement du mois'}</b>
+      <span class="num sub">${m.faitTot}/${m.cibleTot} séries · ${m.nbSem} sem.</span></div>
+    <div class="wbar ${valide ? 'ok' : ''}" style="margin:8px 0"><div style="width:${Math.min(100, m.pct)}%"></div><span>${m.pct}%</span></div>
+    <div class="spread">
+      <span class="sub num">🏋️ ${Math.round(m.tonnage).toLocaleString('fr-FR')} kg${m.tempsMin ? ' · ⏱ ' + fmtDuree(m.tempsMin) : ''}</span>
+      <span class="sub num">${m.seances.length} séance(s)</span>
+    </div>`;
+  const ordre = GROUPES.filter(g => m.parGroupe.has(g))
+    .concat([...m.parGroupe.keys()].filter(g => !GROUPES.includes(g)));
+  $('#sem-groupes').innerHTML = `<div class="card">${ordre.map(g => {
+    const x = m.parGroupe.get(g);
+    const pct = x.cible ? Math.min(100, Math.round(100 * x.fait / x.cible)) : 0;
+    return `<div class="bar-row"><span class="lbl">${esc(g)}</span>
+      <div class="bar-wrap"><div class="bar ${pct >= 100 ? 'obj-ok' : ''}" style="width:${Math.max(2, pct)}%"></div></div>
+      <span class="bar-val num">${x.fait}/${x.cible} sér.</span></div>`;
+  }).join('')}</div>`;
+  $('#sem-extra').innerHTML = '';
+}
 const TAG_TYPE = ty => ty.split('_').map(w => w[0]).join('').toUpperCase();
 
 function semExoRow(it){
@@ -1711,6 +2005,9 @@ function semExoRow(it){
 }
 
 async function renderSemaine(){
+  const ms = $('#sem-mode-s'), mm = $('#sem-mode-m');
+  if (ms){ ms.classList.toggle('on', semMode === 'semaine'); mm.classList.toggle('on', semMode === 'mois'); }
+  if (semMode === 'mois'){ await renderMois(); renderProgramme(); return; }
   const lundi = addJours(lundiDe(new Date()), semaineOffset * 7);
   const dim = addJours(lundi, 6);
   const nx = $('#sem-next'); if (nx) nx.disabled = semaineOffset >= 0;
@@ -1753,6 +2050,110 @@ async function renderSemaine(){
     ${cur.extra.map(f => `<div class="sem-exo"><span class="etat">＋</span>
       <span class="nomx">${esc(f.nom)}</span><span class="prog num">${f.series} séries</span></div>`).join('')}
     <p class="muted" style="margin:6px 0 0">Compte dans le volume, pas dans le % du programme.</p></div>` : '';
+  renderProgramme();
+}
+
+/* ==================== MON PROGRAMME (nomme, date, editable — source des seances) ==================== */
+function renderProgramme(){
+  const el = $('#sem-programme'); if (!el) return;
+  const prog = programmeActuel();
+  if (!prog){
+    el.innerHTML = `<div class="card"><b>📋 Mon programme</b>
+      <p class="sub">Aucun programme défini — les séances utilisent leur dernier modèle.
+      Définis-le pour piloter tes cibles de séries et garder les exos sautés « à faire ».</p>
+      <button class="small" onclick="progInitDepuisSeances()">Créer depuis mes séances actuelles</button></div>`;
+    return;
+  }
+  const nbSem = prog.debut
+    ? Math.max(1, Math.floor((new Date() - new Date(prog.debut + 'T00:00')) / (7 * 864e5)) + 1) : null;
+  const ss = ((dashboard && dashboard.seances) || []).filter(s => prog.debut && s.date >= prog.debut);
+  const ton = ss.reduce((a, s) => a + (s.tonnage || 0), 0);
+  const parGroupe = new Map();
+  prog.exos.forEach((x, gi) => {
+    const g = x.groupe || '?';
+    if (!parGroupe.has(g)) parGroupe.set(g, []);
+    parGroupe.get(g).push({x, gi});
+  });
+  const ordre = GROUPES.filter(g => parGroupe.has(g))
+    .concat([...parGroupe.keys()].filter(g => !GROUPES.includes(g)));
+  const totalSeries = prog.exos.reduce((a, x) => a + (Number(x.series) || 0), 0);
+  el.innerHTML = `<div class="card">
+    <div class="spread"><b>📋 ${esc(prog.nom || 'Mon programme')}</b>
+      <span class="sub num">${totalSeries} séries/sem</span></div>
+    <p class="sub num">depuis le ${prog.debut ? fmtDate(prog.debut) : '?'}${nbSem ? ` · semaine ${nbSem}` : ''}${ss.length ? ` · ${ss.length} séances · ${Math.round(ton).toLocaleString('fr-FR')} kg cumulés` : ''}</p>
+    ${ordre.map(g => {
+      const items = parGroupe.get(g);
+      const st = items.reduce((a, it) => a + (Number(it.x.series) || 0), 0);
+      return `<div style="margin-top:8px">
+        <div class="spread"><b>${esc(g)}</b><span class="sub num">${st} séries</span></div>
+        ${items.map(({x, gi}) => `<div class="sem-exo">
+          <span class="nomx">${esc(x.nom)}<small>${x.type ? TAG_TYPE(x.type) : ''}</small></span>
+          <span class="row" style="gap:2px">
+            <button class="ghost small" onclick="progSeries(${gi}, -1)">−</button>
+            <span class="prog num" style="min-width:20px; text-align:center">${Number(x.series) || 0}</span>
+            <button class="ghost small" onclick="progSeries(${gi}, 1)">+</button>
+            <button class="ghost small" style="color:var(--crit)" onclick="progRetirer(${gi})">✕</button>
+          </span></div>`).join('')}</div>`;
+    }).join('')}
+    <div class="row" style="margin-top:10px">
+      <input id="prog-new-nom" placeholder="Nouvel exercice" style="flex:1; min-width:110px">
+      <select id="prog-new-grp" style="max-width:110px">${GROUPES.map(g => `<option>${g}</option>`).join('')}</select>
+      <select id="prog-new-type" style="max-width:96px"><option value="">séance ?</option>${TYPES.map(x => `<option value="${x.id}">${x.nom}</option>`).join('')}</select>
+      <button class="small" onclick="progAjouter()">+</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="ghost small" onclick="progRenommer()">✏️ renommer</button>
+      <button class="ghost small" onclick="progNouveau()">🆕 nouveau programme</button>
+    </div>
+  </div>`;
+}
+async function progSeries(gi, d){
+  const x = programme.actuel.exos[gi];
+  x.series = Math.max(0, (Number(x.series) || 0) + d);
+  await sauveProgramme('séries ' + x.nom);
+  renderProgramme();
+}
+async function progRetirer(gi){
+  const x = programme.actuel.exos[gi];
+  if (!confirm(`Retirer « ${x.nom} » du programme ?\n(son historique n'est pas touché)`)) return;
+  programme.actuel.exos.splice(gi, 1);
+  await sauveProgramme('retire ' + x.nom);
+  renderSemaine();
+}
+async function progAjouter(){
+  const nom = $('#prog-new-nom').value.trim();
+  if (!nom) return;
+  programme.actuel.exos.push({nom, groupe: $('#prog-new-grp').value,
+    type: $('#prog-new-type').value || null, series: 3});
+  await sauveProgramme('ajout ' + nom);
+  renderSemaine();
+}
+async function progRenommer(){
+  const v = prompt('Nom du programme :', programme.actuel.nom || '');
+  if (v == null || !v.trim()) return;
+  programme.actuel.nom = v.trim();
+  await sauveProgramme('renommage');
+  renderProgramme();
+}
+async function progNouveau(){
+  if (!confirm("Démarrer un NOUVEAU programme ?\nL'actuel sera archivé (rien n'est perdu) ; le nouveau démarre aujourd'hui comme copie modifiable.")) return;
+  programme.historique = programme.historique || [];
+  programme.historique.push(programme.actuel);
+  programme.actuel = {nom: (programme.actuel.nom || 'Programme') + ' v2', debut: today(),
+    exos: JSON.parse(JSON.stringify(programme.actuel.exos))};
+  await sauveProgramme('nouveau programme');
+  renderSemaine();
+}
+async function progInitDepuisSeances(){
+  const pool = poolHebdo(lundiDe(new Date()));
+  if (!pool.size){ alert('Aucune séance de référence trouvée.'); return; }
+  programme = programme || {historique: []};
+  programme.actuel = {nom: 'Mon programme', debut: today(),
+    exos: [...pool.values()].map(it => ({nom: it.nom, groupe: it.groupe,
+      type: it.types[0] || null, series: it.target || 3}))};
+  programme.historique = programme.historique || [];
+  await sauveProgramme('création');
+  renderSemaine();
 }
 
 async function majHomeSemaine(){
@@ -2074,7 +2475,7 @@ function renderSeancesList(d){
         · ${s.nb_exos_progression}/${s.nb_exos_comparables} exos en progression · 🔥 ${s.streak_apres}</div>
       <details><summary>détail exercices</summary><table>
         ${s.exos.map(e => `<tr>
-          <td><span class="dot st-${e.statut === 'progression' ? 'vert' : e.statut === 'egalite' ? 'jaune' : e.statut === 'regression' ? 'rouge' : 'bleu'}"></span>${esc(e.nom)}</td>
+          <td><span class="dot st-${e.statut === 'progression' ? 'vert' : e.statut === 'egalite' ? 'jaune' : e.statut === 'regression' ? 'rouge' : 'bleu'}"></span>${e.superset ? '<b>⛓' + esc(e.superset) + '</b> ' : ''}${esc(e.nom)}</td>
           <td class="num">${e.charge_max != null ? kg(e.charge_max) + ' kg' : '—'}</td>
           <td class="num">${e.metrique === 'tonnage' ? Math.round(e.valeur) + ' kg' : e.metrique === 'reps' ? e.valeur + ' reps' : e.metrique === 'temps' ? e.valeur + ' s' : '—'}</td>
           <td class="num ${e.delta > 0 ? 'c-vert' : e.delta < 0 ? 'c-rouge' : ''}">${e.delta != null ? (e.delta > 0 ? '+' : '') + Math.round(e.delta) : ''}</td></tr>`).join('')}
@@ -2301,6 +2702,7 @@ async function testerConnexion(){
   localLast = (await idb.get('kv', 'local_last')) || {};
   lastByType = (await idb.get('kv', 'last_by_type')) || null;
   dashboard = (await idb.get('kv', 'dashboard')) || null;
+  programme = (await idb.get('kv', 'programme')) || null;
   renderHome(); updateSyncUI();
   if (draft) renderSaisie();
   refreshData(false);
