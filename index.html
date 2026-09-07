@@ -185,6 +185,12 @@ tr.fus{opacity:.72}
   padding:1px 6px; font-size:.72rem; font-weight:700; white-space:nowrap}
 .ss-repos{width:78px; min-height:32px; padding:4px; font-size:.82rem}
 .apercu-fusion{border:1.5px dashed var(--s1); border-radius:10px; padding:8px; margin-top:6px}
+.sugg{background:var(--plane); border:1px solid var(--ring); border-radius:10px; margin-top:4px}
+.sugg button{display:block; width:100%; text-align:left; background:none; color:var(--ink);
+  border:none; border-bottom:1px solid var(--grid); border-radius:0; padding:9px 12px; min-height:40px}
+.sugg button:last-child{border-bottom:none}
+.sugg small{color:var(--muted); display:block}
+.paire{border:1px solid var(--ring); border-radius:10px; padding:8px 10px; margin-top:6px}
 /* --- semaine --- */
 .wbar{background:var(--plane); border-radius:8px; height:22px; position:relative; overflow:hidden}
 .wbar>div{height:100%; background:var(--s1); border-radius:8px 4px 4px 8px; min-width:2px;
@@ -258,10 +264,12 @@ tr.fus{opacity:.72}
   <div class="card">
     <label>Ajouter un exercice</label>
     <div class="row" style="margin-top:6px">
-      <input id="se-new-nom" placeholder="Nom de l'exercice" style="flex:1">
+      <input id="se-new-nom" placeholder="Nom de l'exercice" style="flex:1"
+        oninput="renderSuggestions('se')" autocomplete="off">
       <select id="se-new-grp"></select>
       <button class="small" onclick="ajouterExo()">+</button>
     </div>
+    <div id="se-sugg"></div>
   </div>
   <div class="card">
     <label>Note de séance</label>
@@ -326,6 +334,8 @@ tr.fus{opacity:.72}
   <h2>Exercices</h2>
   <select id="st-exo-sel" style="width:100%" onchange="renderEvolution();renderExoHisto()"></select>
   <div class="card" id="st-exo-histo" style="margin-top:6px"></div>
+  <button class="ghost small" style="margin-top:4px" onclick="renderConsolidation()">🧹 Consolider les exercices (doublons de noms)</button>
+  <div id="st-consolide"></div>
   <div id="st-evo-modes" style="margin-top:6px"></div>
   <div class="card" id="st-evo"></div>
 
@@ -441,8 +451,8 @@ window.addEventListener('unhandledrejection', (e) => {
   const s = document.getElementById('home-status');
   if (s) s.textContent = '⚠️ Erreur : ' + (e.reason && e.reason.message || e.reason);
 });
-const APP_VERSION = '2.4.0';
-const APP_BUILD = '04/09/2026';
+const APP_VERSION = '2.5.0';
+const APP_BUILD = '07/09/2026';
 const GROUPES = ['Pec','Dos','Epaules','Biceps','Triceps','Quadriceps','Ischios','Fessiers','Mollets','Lombaires','Abdos'];
 const TYPES = [
   {id:'upper_a', nom:'Upper A'}, {id:'upper_b', nom:'Upper B'},
@@ -1210,10 +1220,12 @@ function addDegressif(i){
   setTimeout(() => { const el = document.getElementById('exo-' + (i + 1)); if (el) el.scrollIntoView({block: 'center'}); }, 50);
 }
 function ajouterExo(){
-  const nom = $('#se-new-nom').value.trim();
+  let nom = $('#se-new-nom').value.trim();
   if (!nom) return;
-  draft.exercices.push(nouvelExo(nom, $('#se-new-grp').value, null, null));
+  nom = nomOuExistant(nom);
+  draft.exercices.push(nouvelExo(nom, $('#se-new-grp').value, rappelDepuisOccurrences(nom), null));
   $('#se-new-nom').value = '';
+  $('#se-sugg').innerHTML = '';
   saveDraft(); renderSaisie();
   window.scrollTo(0, document.body.scrollHeight - 900);
 }
@@ -1233,8 +1245,11 @@ function quitterSeance(){ show('home'); }
 /* ==================== historique par exo (autonome : batch + seances locales) ==================== */
 function occurrencesExo(cle){
   const out = [], ids = new Set();
-  const ev = dashboard && dashboard.evolution_exos && dashboard.evolution_exos[cle];
-  for (const pt of ((ev && ev.points) || [])){
+  // toutes les entrees d'evolution qui pointent (directement ou via un alias recent) vers cette cle
+  const entrees = [];
+  for (const [k, v] of Object.entries((dashboard && dashboard.evolution_exos) || {}))
+    if (k === cle || canonJs(k) === cle) entrees.push(v);
+  for (const ev of entrees) for (const pt of (ev.points || [])){
     if (!pt.date) continue;
     ids.add(pt.seance);
     out.push({date: pt.date, seance: pt.seance, lieu: pt.lieu || null, note: pt.note || null,
@@ -1397,6 +1412,17 @@ function apercuFusion(i, cle, cibleCle){
     </div>
   </div>`;
 }
+/* fusionne deux cles : l'ancienne devient un alias de la cible (local immediat + config.json) */
+async function fusionnerCles(ancien, cible, message){
+  dashboard.alias = dashboard.alias || {};
+  for (const k in dashboard.alias) if (dashboard.alias[k] === ancien) dashboard.alias[k] = cible;
+  dashboard.alias[ancien] = cible;
+  dashboard.alias[ancien + ' (degressif)'] = cible + ' (degressif)';
+  await idb.set('kv', 'dashboard', dashboard);
+  await idb.set('queue', null, {qid: 'alias#' + Date.now(), kind: 'alias', ancien, nouveau: cible,
+    message: message || `assimilation : ${ancien} -> ${cible}`});
+  updateSyncUI(); flushQueue();
+}
 async function assimilerExo(i, cibleCle){
   fusionCible = null;
   if (!cibleCle){ return; }
@@ -1404,15 +1430,57 @@ async function assimilerExo(i, cibleCle){
   const cle = canonJs(e.nom);
   if (cle === cibleCle){ renderGraphSaisie(i); return; }
   const cibleLabel = (dashboard.evolution_exos[cibleCle] || {}).label || cibleCle;
-  dashboard.alias = dashboard.alias || {};
-  for (const k in dashboard.alias) if (dashboard.alias[k] === cle) dashboard.alias[k] = cibleCle;
-  dashboard.alias[cle] = cibleCle;
-  dashboard.alias[cle + ' (degressif)'] = cibleCle + ' (degressif)';
-  await idb.set('kv', 'dashboard', dashboard);
-  await idb.set('queue', null, {qid: 'alias#' + Date.now(), kind: 'alias', ancien: cle, nouveau: cibleCle,
-    message: `assimilation : ${e.nom} -> ${cibleLabel}`});
-  updateSyncUI(); flushQueue();
+  await fusionnerCles(cle, cibleCle, `assimilation : ${e.nom} -> ${cibleLabel}`);
   renderGraphSaisie(i);
+}
+/* assimilation directe d'un exo « En plus » de la semaine */
+async function assimilerExtra(cle, cibleCle){
+  if (!cibleCle) return;
+  if (!confirm(`Assimiler cet exercice à « ${cibleCle} » ?\nSes séries rejoindront le programme et le %.`)){
+    renderSemaine(); return;
+  }
+  await fusionnerCles(cle, cibleCle);
+  renderSemaine();
+}
+/* outil de consolidation : detecte les paires de noms suspects dans tout l'historique */
+function pairesSuspectes(){
+  const ignorees = new Set(JSON.parse(localStorage.getItem('muscu_paires_ign') || '[]'));
+  const cat = [...catalogueExos().values()];
+  const paires = [];
+  for (let a = 0; a < cat.length; a++)
+    for (let b = a + 1; b < cat.length; b++){
+      const s = scoreSimilarite(cat[a].cle, cat[b].cle);
+      const id = [cat[a].cle, cat[b].cle].sort().join('||');
+      if (s >= 0.45 && !ignorees.has(id)) paires.push({a: cat[a], b: cat[b], s, id});
+    }
+  return paires.sort((x, y) => y.s - x.s).slice(0, 20);
+}
+function renderConsolidation(){
+  const el = $('#st-consolide'); if (!el) return;
+  const paires = pairesSuspectes();
+  if (!paires.length){ el.innerHTML = '<p class="muted">Aucun doublon suspect 🎉 (les paires ignorées ne réapparaissent pas).</p>'; return; }
+  el.innerHTML = paires.map(pr => {
+    const inf = x => `<b>${esc(x.label)}</b> <span class="muted num">(${x.nb}× ${x.derniere ? '· dern. ' + fmtDate(x.derniere) : ''}${x.auProgramme ? ' · 📋' : ''})</span>`;
+    return `<div class="paire">
+      <div>${inf(pr.a)}<br>⇄ ${inf(pr.b)}</div>
+      <div class="row" style="margin-top:6px">
+        <button class="ghost small" onclick="consolider('${esc(pr.a.cle)}','${esc(pr.b.cle)}')">→ garder « ${esc(pr.b.label)} »</button>
+        <button class="ghost small" onclick="consolider('${esc(pr.b.cle)}','${esc(pr.a.cle)}')">→ garder « ${esc(pr.a.label)} »</button>
+        <button class="ghost small" onclick="ignorerPaire('${esc(pr.id)}')">pas un doublon</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+async function consolider(ancien, cible){
+  if (!confirm(`Fusionner « ${ancien} » dans « ${cible} » ?\nTout l'historique sera consolidé (réversible via ✕ dans les noms fusionnés).`)) return;
+  await fusionnerCles(ancien, cible);
+  renderConsolidation(); renderExoSelect(dashboard); renderExoHisto();
+}
+function ignorerPaire(id){
+  const ign = JSON.parse(localStorage.getItem('muscu_paires_ign') || '[]');
+  ign.push(id);
+  localStorage.setItem('muscu_paires_ign', JSON.stringify(ign));
+  renderConsolidation();
 }
 function selectAssimiler(i, cle){
   const opts = Object.entries((dashboard && dashboard.evolution_exos) || {})
@@ -1780,6 +1848,79 @@ async function finaliserSeance(){
   alert('Séance enregistrée 💪 Elle part sur GitHub dès que tu as du réseau.');
 }
 
+/* ==================== ANTI-DOUBLONS : similarite, catalogue, suggestions ==================== */
+/* similarite entre deux noms normalises : jaccard des mots + bonus prefixe/inclusion */
+function scoreSimilarite(a, b){
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  const ta = new Set(a.split(' ')), tb = new Set(b.split(' '));
+  let inter = 0;
+  for (const x of ta) if (tb.has(x)) inter++;
+  const jac = inter / (ta.size + tb.size - inter);
+  const pref = (a.startsWith(b) || b.startsWith(a)) ? 0.3 : 0;
+  const incl = !pref && (a.includes(b) || b.includes(a)) ? 0.25 : 0;
+  return Math.min(1, jac + pref + incl);
+}
+/* tous les exos connus : historique (evolution) + programme, dedupliques par cle canonique */
+function catalogueExos(){
+  const map = new Map();
+  for (const [k, v] of Object.entries((dashboard && dashboard.evolution_exos) || {})){
+    if (k.endsWith(' (degressif)')) continue;
+    const cible = canonJs(k);                       // suit les alias locaux recents
+    const it = map.get(cible) || {cle: cible, label: v.label, nb: 0, derniere: null, groupe: null};
+    it.nb += v.points.length;
+    const d = v.points.length ? v.points[v.points.length - 1].date : null;
+    if (d && (!it.derniere || d > it.derniere)){ it.derniere = d; it.label = v.label; }
+    map.set(cible, it);
+  }
+  const prog = programmeActuel();
+  if (prog) for (const x of prog.exos){
+    const c = canonJs(x.nom);
+    const it = map.get(c) || {cle: c, label: x.nom, nb: 0, derniere: null, groupe: null};
+    it.groupe = it.groupe || x.groupe || null;
+    it.auProgramme = true;
+    map.set(c, it);
+  }
+  return map;
+}
+function meilleursMatchs(saisie, max){
+  const n = normJs(saisie);
+  if (n.length < 2) return [];
+  return [...catalogueExos().values()]
+    .map(it => ({...it, score: scoreSimilarite(n, it.cle)}))
+    .filter(it => it.score >= 0.2 && it.cle !== n)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, max || 5);
+}
+function renderSuggestions(ctx){
+  const input = $(ctx === 'se' ? '#se-new-nom' : '#prog-new-nom');
+  const box = $(ctx === 'se' ? '#se-sugg' : '#prog-sugg');
+  if (!input || !box) return;
+  const matchs = meilleursMatchs(input.value, 4);
+  box.innerHTML = matchs.length ? `<div class="sugg">${matchs.map(m =>
+    `<button data-label="${esc(m.label)}" data-groupe="${esc(m.groupe || '')}" data-ctx="${ctx}"
+       onclick="prendSuggestion(this)">${esc(m.label)}
+       <small>${m.auProgramme ? '📋 au programme · ' : ''}${m.nb ? m.nb + ' fois' : 'jamais logué'}${m.derniere ? ' · dern. ' + fmtDate(m.derniere) : ''}</small></button>`).join('')}</div>` : '';
+}
+function prendSuggestion(btn){
+  const ctx = btn.dataset.ctx;
+  const input = $(ctx === 'se' ? '#se-new-nom' : '#prog-new-nom');
+  input.value = btn.dataset.label;
+  if (btn.dataset.groupe){
+    const sel = $(ctx === 'se' ? '#se-new-grp' : '#prog-new-grp');
+    if (sel && [...sel.options].some(o => o.value === btn.dataset.groupe)) sel.value = btn.dataset.groupe;
+  }
+  $(ctx === 'se' ? '#se-sugg' : '#prog-sugg').innerHTML = '';
+}
+/* garde-fou : si le nom saisi ressemble fort a un exo connu, proposer de le reutiliser */
+function nomOuExistant(nom){
+  const m = meilleursMatchs(nom, 1)[0];
+  if (m && m.score >= 0.55 &&
+      confirm(`« ${nom} » ressemble à « ${m.label} »${m.nb ? ` (déjà ${m.nb} fois)` : ''}.\n\nOK = utiliser « ${m.label} » (même exercice)\nAnnuler = créer « ${nom} » comme nouvel exercice`))
+    return m.label;
+  return nom;
+}
+
 /* ==================== PROGRAMME (stub — complete par la section programme) ==================== */
 let programme = null;
 function programmeActuel(){
@@ -1868,7 +2009,7 @@ async function seancesEntre(deb, fin){
     if (s.date && s.date >= deb && s.date < fin && !vues.has(s.id)){
       vues.add(s.id);
       out.push({id: s.id, date: s.date, src: 'dash', duree_min: s.duree_min || null,
-        exos: s.exos.map(e => ({cle: e.cle || canonJs(e.nom), nom: e.nom, groupe: e.groupe,
+        exos: s.exos.map(e => ({cle: canonJs(e.nom), nom: e.nom, groupe: e.groupe,
           series: e.nb_series || 0, statut: e.statut,
           tonnage: e.metrique === 'tonnage' ? (e.valeur || 0) : 0}))});
     }
@@ -1905,15 +2046,18 @@ async function calculeSemaine(lundi){
     if (e.statut) f.statuts.push(e.statut);
     faits.set(e.cle, f);
   }
-  let cibleTot = 0, faitTot = 0, couverts = 0;
+  let cibleTot = 0, faitTot = 0, couverts = 0, seriesTot = 0;
+  for (const f of faits.values()) seriesTot += f.series;      // TOUT compte dans le volume
   for (const it of pool.values()){
     const f = faits.get(it.cle);
     it.fait = f ? f.series : 0; it.statuts = f ? f.statuts : [];
     if (it.target > 0){ cibleTot += it.target; faitTot += Math.min(it.fait, it.target); }
     if (it.fait > 0) couverts++;
   }
-  const extra = [...faits.entries()].filter(([c]) => !pool.has(c)).map(([, f]) => f);
-  return {pool, extra, seances, tonnage, tempsMin, faitTot, cibleTot,
+  const extra = [...faits.entries()].filter(([c]) => !pool.has(c))
+    .map(([c, f]) => ({...f, cle: c}));
+  const seriesExtra = extra.reduce((a, f) => a + f.series, 0);
+  return {pool, extra, seances, tonnage, tempsMin, faitTot, cibleTot, seriesTot, seriesExtra,
     pct: cibleTot ? Math.round(100 * faitTot / cibleTot) : 0,
     couverts, poolN: pool.size};
 }
@@ -2025,7 +2169,8 @@ async function renderSemaine(){
       <span class="sub num">🏋️ ${Math.round(cur.tonnage).toLocaleString('fr-FR')} kg
         ${dT != null ? `<span class="${dT > 0 ? 'c-vert' : dT < 0 ? 'c-rouge' : 'muted'}">${dT > 0 ? '▲ +' : dT < 0 ? '▼ ' : ''}${dT}% vs S−1</span>` : ''}</span>
       <span class="sub num">${cur.couverts}/${cur.poolN} exos · ${cur.seances.length} séance(s)${cur.tempsMin ? ' · ⏱ ' + fmtDuree(cur.tempsMin) : ''}</span>
-    </div>`;
+    </div>
+    <p class="sub num" style="margin:6px 0 0">Total réalisé : <b>${cur.seriesTot}</b> séries — tout compte${cur.seriesExtra ? `, dont <b>${cur.seriesExtra}</b> hors programme (🔗 assimile-les ci-dessous si ce sont des doublons de noms)` : ''}</p>`;
   const parGroupe = new Map();
   for (const it of cur.pool.values()){
     if (!parGroupe.has(it.groupe)) parGroupe.set(it.groupe, []);
@@ -2047,9 +2192,21 @@ async function renderSemaine(){
   }).join('');
   $('#sem-extra').innerHTML = cur.extra.length ? `<div class="card">
     <b>En plus du programme</b>
-    ${cur.extra.map(f => `<div class="sem-exo"><span class="etat">＋</span>
-      <span class="nomx">${esc(f.nom)}</span><span class="prog num">${f.series} séries</span></div>`).join('')}
-    <p class="muted" style="margin:6px 0 0">Compte dans le volume, pas dans le % du programme.</p></div>` : '';
+    ${cur.extra.map(f => {
+      const matchs = [...cur.pool.values()]
+        .map(it => ({it, score: scoreSimilarite(f.cle, it.cle)}))
+        .filter(x => x.score >= 0.25)
+        .sort((a, b) => b.score - a.score).slice(0, 4);
+      return `<div class="sem-exo"><span class="etat">＋</span>
+      <span class="nomx">${esc(f.nom)}<small>${f.series} séries · comptées dans le volume</small></span>
+      ${matchs.length ? `<select class="small" style="max-width:150px; min-height:34px; padding:2px 6px; font-size:.78rem"
+          onchange="assimilerExtra('${esc(f.cle)}', this.value)">
+        <option value="">🔗 c'est en fait…</option>
+        ${matchs.map(x => `<option value="${esc(x.it.cle)}">${esc(x.it.nom)}</option>`).join('')}
+      </select>` : ''}</div>`;
+    }).join('')}
+    <p class="muted" style="margin:6px 0 0">Ces séries comptent dans le volume total. Si c'est un
+    doublon de nom, assimile-le : il rejoindra le programme et le %.</p></div>` : '';
   renderProgramme();
 }
 
@@ -2096,11 +2253,13 @@ function renderProgramme(){
           </span></div>`).join('')}</div>`;
     }).join('')}
     <div class="row" style="margin-top:10px">
-      <input id="prog-new-nom" placeholder="Nouvel exercice" style="flex:1; min-width:110px">
+      <input id="prog-new-nom" placeholder="Nouvel exercice" style="flex:1; min-width:110px"
+        oninput="renderSuggestions('prog')" autocomplete="off">
       <select id="prog-new-grp" style="max-width:110px">${GROUPES.map(g => `<option>${g}</option>`).join('')}</select>
       <select id="prog-new-type" style="max-width:96px"><option value="">séance ?</option>${TYPES.map(x => `<option value="${x.id}">${x.nom}</option>`).join('')}</select>
       <button class="small" onclick="progAjouter()">+</button>
     </div>
+    <div id="prog-sugg"></div>
     <div class="row" style="margin-top:10px">
       <button class="ghost small" onclick="progRenommer()">✏️ renommer</button>
       <button class="ghost small" onclick="progNouveau()">🆕 nouveau programme</button>
@@ -2121,8 +2280,12 @@ async function progRetirer(gi){
   renderSemaine();
 }
 async function progAjouter(){
-  const nom = $('#prog-new-nom').value.trim();
+  let nom = $('#prog-new-nom').value.trim();
   if (!nom) return;
+  nom = nomOuExistant(nom);
+  if (programme.actuel.exos.some(x => canonJs(x.nom) === canonJs(nom))){
+    alert('« ' + nom + ' » est déjà au programme.'); return;
+  }
   programme.actuel.exos.push({nom, groupe: $('#prog-new-grp').value,
     type: $('#prog-new-type').value || null, series: 3});
   await sauveProgramme('ajout ' + nom);
