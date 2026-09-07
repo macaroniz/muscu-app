@@ -50,6 +50,8 @@ h1{font-size:1.35rem; margin:.2rem 0 .6rem}
 h2{font-size:.82rem; margin:1.4rem 0 .5rem; color:var(--ink2); text-transform:uppercase; letter-spacing:.06em}
 .view{display:none; padding:max(12px, env(safe-area-inset-top)) 14px 14px}
 .view.active{display:block}
+.st-sec,.co-sec{display:none}
+.st-sec.on,.co-sec.on{display:block}
 .card{background:var(--surface); border:1px solid var(--ring); border-radius:14px;
   padding:12px 14px; margin-bottom:10px}
 button{font:inherit; border:none; border-radius:12px; padding:12px 16px;
@@ -241,8 +243,8 @@ tr.fus{opacity:.72}
   <div id="home-banner"></div>
   <div id="home-resume"></div>
   <div id="home-semaine"></div>
-  <div id="home-derniere"></div>
   <div id="home-types"></div>
+  <div id="home-derniere"></div>
   <p class="muted" id="home-status"></p>
 </div>
 
@@ -292,83 +294,114 @@ tr.fus{opacity:.72}
   <div class="chips">
     <button class="ghost small per" id="sem-mode-s" onclick="semMode='semaine';renderSemaine()">Semaine</button>
     <button class="ghost small per" id="sem-mode-m" onclick="semMode='mois';renderSemaine()">Mois</button>
+    <button class="ghost small per" id="sem-mode-p" onclick="semMode='prog';renderSemaine()">📋 Programme</button>
   </div>
   <p class="sub" id="sem-titre"></p>
   <div class="card" id="sem-resume"></div>
   <div id="sem-groupes"></div>
   <div id="sem-extra"></div>
-  <div id="sem-programme"></div>
-  <p class="muted">Répartis ton programme librement sur la semaine : un exo fait dans n'importe
-  quelle séance compte. Un exo improvisé apparaît dans « En plus ». Un exo non rempli reste
-  simplement « à faire » — il ne pollue jamais l'historique.</p>
+  <div id="sem-programme" style="display:none"></div>
+  <div id="sem-outils" style="display:none">
+    <h2>🧹 Doublons de noms</h2>
+    <p class="sub">Même exercice enregistré sous deux noms ? Fusionne — historique et % de semaine
+    se corrigent immédiatement.</p>
+    <div id="st-consolide"></div>
+  </div>
+  <p class="muted" id="sem-hint">Répartis ton programme librement sur la semaine : un exo fait dans
+  n'importe quelle séance compte. Un exo improvisé apparaît dans « En plus ». Un exo non rempli reste
+  simplement « à faire ». Exos, cibles de séries et doublons se gèrent dans la puce <b>📋 Programme</b>.</p>
 </div>
 
-<!-- ======================= STATS ======================= -->
+<!-- ======================= PROGRÈS ======================= -->
 <div class="view" id="view-stats">
-  <h1>Stats</h1>
+  <h1>Progrès</h1>
   <p class="muted" id="st-fraicheur"></p>
   <div class="tile">
     <div class="card"><div class="hero" id="st-streak">–</div><div class="sub">🔥 série en cours</div></div>
     <div class="card"><div class="hero" id="st-record">–</div><div class="sub">record</div></div>
   </div>
+  <div class="chips" id="st-chips">
+    <button class="ghost small per" data-sec="exos" onclick="statsSec='exos';renderStats()">Exercices</button>
+    <button class="ghost small per" data-sec="volume" onclick="statsSec='volume';renderStats()">Volume</button>
+    <button class="ghost small per" data-sec="cal" onclick="statsSec='cal';renderStats()">Calendrier</button>
+    <button class="ghost small per" data-sec="seances" onclick="statsSec='seances';renderStats()">Séances</button>
+    <button class="ghost small per" data-sec="obj" onclick="statsSec='obj';renderStats()">Objectifs</button>
+  </div>
 
-  <h2>Calendrier</h2>
-  <div class="card">
-    <div class="spread">
-      <button class="ghost small" onclick="calNav(-1)">‹</button>
-      <b id="cal-titre"></b>
-      <button class="ghost small" onclick="calNav(1)">›</button>
+  <div class="st-sec" data-sec="exos">
+    <select id="st-exo-sel" style="width:100%" onchange="renderEvolution();renderExoHisto()"></select>
+    <div class="card" id="st-exo-histo" style="margin-top:6px"></div>
+    <div id="st-evo-modes" style="margin-top:6px"></div>
+    <div class="card" id="st-evo"></div>
+    <p class="muted">Deux noms pour le même exo ? <a href="#" onclick="semMode='prog';show('semaine');return false">🧹 consolider (Programme)</a></p>
+  </div>
+
+  <div class="st-sec" data-sec="volume">
+    <h2>Volume de la semaine <span class="muted" id="st-vol-note"></span></h2>
+    <div class="chips" id="st-semaines"></div>
+    <div class="card" id="st-volume"></div>
+    <h2>Volume dans le temps</h2>
+    <div id="st-volc-per"></div>
+    <div class="card" id="st-volcourbe"></div>
+  </div>
+
+  <div class="st-sec" data-sec="cal">
+    <div class="card">
+      <div class="spread">
+        <button class="ghost small" onclick="calNav(-1)">‹</button>
+        <b id="cal-titre"></b>
+        <button class="ghost small" onclick="calNav(1)">›</button>
+      </div>
+      <div class="cal-grid" id="cal-grid" style="margin-top:8px"></div>
+      <p class="sub" id="cal-detail"></p>
     </div>
-    <div class="cal-grid" id="cal-grid" style="margin-top:8px"></div>
-    <p class="sub" id="cal-detail"></p>
   </div>
 
-  <h2>Volume de la semaine <span class="muted" id="st-vol-note"></span></h2>
-  <div class="chips" id="st-semaines"></div>
-  <div class="card" id="st-volume"></div>
-
-  <h2>Volume dans le temps</h2>
-  <div id="st-volc-per"></div>
-  <div class="card" id="st-volcourbe"></div>
-
-  <h2>Exercices</h2>
-  <select id="st-exo-sel" style="width:100%" onchange="renderEvolution();renderExoHisto()"></select>
-  <div class="card" id="st-exo-histo" style="margin-top:6px"></div>
-  <button class="ghost small" style="margin-top:4px" onclick="renderConsolidation()">🧹 Consolider les exercices (doublons de noms)</button>
-  <div id="st-consolide"></div>
-  <div id="st-evo-modes" style="margin-top:6px"></div>
-  <div class="card" id="st-evo"></div>
-
-  <h2>Objectifs</h2>
-  <div class="card" id="st-objectifs"></div>
-
-  <h2>Séances</h2>
-  <div id="st-seances"></div>
-
-  <h2>Hygiène de vie (7 derniers jours)</h2>
-  <div class="card" id="st-sante"></div>
-
-  <h2>Mensurations</h2>
-  <div class="row"><select id="st-mes-sel" style="flex:1" onchange="renderMesures()"></select></div>
-  <div id="st-mes-per"></div>
-  <div class="card" id="st-mes"></div>
-
-  <h2>Corrélations</h2>
-  <div class="row">
-    <select id="st-corr-x" onchange="renderCorr()"></select>
-    <span class="muted">×</span>
-    <select id="st-corr-y" onchange="renderCorr()"></select>
+  <div class="st-sec" data-sec="seances">
+    <div id="st-seances"></div>
   </div>
-  <div class="card" id="st-corr"></div>
+
+  <div class="st-sec" data-sec="obj">
+    <div class="card" id="st-objectifs"></div>
+  </div>
 </div>
 
-<!-- ======================= MENSURATIONS ======================= -->
+<!-- ======================= CORPS ======================= -->
 <div class="view" id="view-mesures">
-  <h1>Mensurations</h1>
-  <p class="sub">Saisie périodique (ex. 1×/mois). En cm.</p>
-  <div class="card" id="mes-form"></div>
-  <button style="width:100%" onclick="enregistrerMesures()">Enregistrer</button>
-  <p class="muted" id="mes-status"></p>
+  <h1>Corps</h1>
+  <div class="chips" id="co-chips">
+    <button class="ghost small per" data-sec="sante" onclick="corpsSec='sante';renderCorps()">Santé</button>
+    <button class="ghost small per" data-sec="mensu" onclick="corpsSec='mensu';renderCorps()">Mensurations</button>
+    <button class="ghost small per" data-sec="corr" onclick="corpsSec='corr';renderCorps()">Corrélations</button>
+  </div>
+
+  <div class="co-sec" data-sec="sante">
+    <h2>Hygiène de vie (7 derniers jours)</h2>
+    <div class="card" id="st-sante"></div>
+    <p class="muted">Sommeil, FC repos, calories, protéines, poids… se rempliront tout seuls
+    quand le raccourci Santé de l'iPhone sera branché.</p>
+  </div>
+
+  <div class="co-sec" data-sec="mensu">
+    <p class="sub">Saisie périodique (ex. 1×/mois). En cm.</p>
+    <div class="card" id="mes-form"></div>
+    <button style="width:100%" onclick="enregistrerMesures()">Enregistrer</button>
+    <p class="muted" id="mes-status"></p>
+    <h2>Évolution</h2>
+    <div class="row"><select id="st-mes-sel" style="flex:1" onchange="renderMesures()"></select></div>
+    <div id="st-mes-per"></div>
+    <div class="card" id="st-mes"></div>
+  </div>
+
+  <div class="co-sec" data-sec="corr">
+    <h2>Corrélations <span class="muted">séances × hygiène de vie</span></h2>
+    <div class="row">
+      <select id="st-corr-x" onchange="renderCorr()"></select>
+      <span class="muted">×</span>
+      <select id="st-corr-y" onchange="renderCorr()"></select>
+    </div>
+    <div class="card" id="st-corr"></div>
+  </div>
 </div>
 
 <!-- ======================= RÉGLAGES ======================= -->
@@ -433,8 +466,8 @@ tr.fus{opacity:.72}
 <nav>
   <button data-v="home" class="on"><span class="ico">🏋️</span>Séance</button>
   <button data-v="semaine"><span class="ico">📅</span>Semaine</button>
-  <button data-v="stats"><span class="ico">📈</span>Stats</button>
-  <button data-v="mesures"><span class="ico">📏</span>Mesures</button>
+  <button data-v="stats"><span class="ico">📈</span>Progrès</button>
+  <button data-v="mesures"><span class="ico">❤️</span>Corps</button>
   <button data-v="reglages"><span class="ico">⚙️</span>Réglages</button>
 </nav>
 
@@ -451,7 +484,7 @@ window.addEventListener('unhandledrejection', (e) => {
   const s = document.getElementById('home-status');
   if (s) s.textContent = '⚠️ Erreur : ' + (e.reason && e.reason.message || e.reason);
 });
-const APP_VERSION = '2.5.0';
+const APP_VERSION = '2.6.0';
 const APP_BUILD = '07/09/2026';
 const GROUPES = ['Pec','Dos','Epaules','Biceps','Triceps','Quadriceps','Ischios','Fessiers','Mollets','Lombaires','Abdos'];
 const TYPES = [
@@ -709,7 +742,7 @@ async function refreshData(force){
     $('#home-status').textContent = 'Hors ligne — données du ' +
       (localStorage.getItem('muscu_lastfetch') ? new Date(localStorage.getItem('muscu_lastfetch')).toLocaleString('fr-FR') : 'jamais');
   }
-  renderHome(); renderStats();
+  renderHome(); renderStats(); renderCorps();
 }
 
 /* le "modele" d'un type = sa derniere seance (distante ou locale, la plus recente) */
@@ -732,7 +765,7 @@ function show(view){
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
   if (view === 'stats') renderStats();
   if (view === 'semaine') renderSemaine();
-  if (view === 'mesures') renderMesForm();
+  if (view === 'mesures') renderCorps();
   if (view === 'reglages') renderReglages();
   if (view === 'home') renderHome();
   window.scrollTo(0, 0);
@@ -2063,6 +2096,8 @@ async function calculeSemaine(lundi){
 }
 
 let semMode = 'semaine', moisOffset = 0;
+let statsSec = localStorage.getItem('muscu_statsSec') || 'exos';
+let corpsSec = localStorage.getItem('muscu_corpsSec') || 'sante';
 function semaineNav(d){
   if (semMode === 'mois') moisOffset = Math.min(0, moisOffset + d);
   else semaineOffset = Math.min(0, semaineOffset + d);
@@ -2148,9 +2183,24 @@ function semExoRow(it){
   </div>`;
 }
 
+function majVisibiliteSemaine(){
+  const prog = semMode === 'prog';
+  for (const id of ['sem-titre', 'sem-resume', 'sem-groupes', 'sem-extra', 'sem-hint']){
+    const el = document.getElementById(id); if (el) el.style.display = prog ? 'none' : '';
+  }
+  const p = $('#sem-programme'); if (p) p.style.display = prog ? '' : 'none';
+  const o = $('#sem-outils'); if (o) o.style.display = prog ? '' : 'none';
+  const fl = document.querySelector('#view-semaine .spread .row');
+  if (fl) fl.style.visibility = prog ? 'hidden' : '';
+  const h = document.querySelector('#view-semaine h1');
+  if (h) h.textContent = prog ? 'Mon programme' : 'Ma semaine';
+}
 async function renderSemaine(){
-  const ms = $('#sem-mode-s'), mm = $('#sem-mode-m');
+  const ms = $('#sem-mode-s'), mm = $('#sem-mode-m'), mp = $('#sem-mode-p');
   if (ms){ ms.classList.toggle('on', semMode === 'semaine'); mm.classList.toggle('on', semMode === 'mois'); }
+  if (mp) mp.classList.toggle('on', semMode === 'prog');
+  majVisibiliteSemaine();
+  if (semMode === 'prog'){ renderProgramme(); renderConsolidation(); return; }
   if (semMode === 'mois'){ await renderMois(); renderProgramme(); return; }
   const lundi = addJours(lundiDe(new Date()), semaineOffset * 7);
   const dim = addJours(lundi, 6);
@@ -2389,6 +2439,9 @@ function filtrePeriode(pts, cle){
 
 /* ==================== STATS ==================== */
 function renderStats(){
+  localStorage.setItem('muscu_statsSec', statsSec);
+  document.querySelectorAll('#st-chips .per').forEach(b => b.classList.toggle('on', b.dataset.sec === statsSec));
+  document.querySelectorAll('#view-stats .st-sec').forEach(s => s.classList.toggle('on', s.dataset.sec === statsSec));
   const d = dashboard;
   $('#st-fraicheur').textContent = d ? 'Calculé le ' + new Date(d.genere_le).toLocaleString('fr-FR')
     : 'Pas encore de données calculées — le batch tournera après ta première synchro.';
@@ -2396,8 +2449,7 @@ function renderStats(){
   $('#st-streak').textContent = d.streak.actuel;
   $('#st-record').textContent = d.streak.record;
   renderCalendrier(); renderSemaines(d); renderVolumeCourbe();
-  renderExoSelect(d); renderObjectifs(d);
-  renderSeancesList(d); renderSante(d); renderMesuresSelect(d); renderCorrSelects(d);
+  renderExoSelect(d); renderObjectifs(d); renderSeancesList(d);
 }
 
 /* --- volume hebdo : barres horizontales, 1 teinte (magnitude) --- */
@@ -2798,6 +2850,15 @@ function renderCorr(){
 }
 
 /* ==================== MENSURATIONS (saisie) ==================== */
+function renderCorps(){
+  localStorage.setItem('muscu_corpsSec', corpsSec);
+  document.querySelectorAll('#co-chips .per').forEach(b => b.classList.toggle('on', b.dataset.sec === corpsSec));
+  document.querySelectorAll('#view-mesures .co-sec').forEach(s => s.classList.toggle('on', s.dataset.sec === corpsSec));
+  renderMesForm();
+  if (dashboard){ renderSante(dashboard); renderMesuresSelect(dashboard); renderCorrSelects(dashboard); }
+  else { const s = $('#st-sante');
+    if (s) s.innerHTML = '<p class="muted">Pas encore de données calculées — le batch tournera après ta première synchro.</p>'; }
+}
 function renderMesForm(){
   $('#mes-form').innerHTML =
     `<label>Date</label><input type="date" id="mes-date" value="${today()}" style="width:100%">` +
